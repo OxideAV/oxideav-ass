@@ -83,6 +83,69 @@ fn parses_linebreak() {
 }
 
 #[test]
+fn unknown_override_preserved_alongside_known_ones() {
+    // `\fad` is not interpreted; parser should preserve it in the re-emit.
+    let src = r"[Script Info]
+ScriptType: v4.00+
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\b1\fad(100,200)}hello
+";
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    assert!(out.contains("{\\b1}"), "bold override lost:\n{out}");
+    assert!(out.contains("\\fad(100,200)"), "fad override lost:\n{out}");
+    assert!(out.contains("hello"));
+}
+
+#[test]
+fn reset_override_clears_inline_state() {
+    let src = r"[Script Info]
+ScriptType: v4.00+
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\b1}bold{\r}plain
+";
+    let t = ass::parse(src.as_bytes()).unwrap();
+    // After \r the following text should not be wrapped in Bold.
+    let segs = &t.cues[0].segments;
+    let mut saw_plain_not_in_bold = false;
+    for s in segs {
+        if let Segment::Text(txt) = s {
+            if txt.contains("plain") {
+                saw_plain_not_in_bold = true;
+            }
+        }
+    }
+    assert!(
+        saw_plain_not_in_bold,
+        "expected `plain` as bare text: {segs:?}"
+    );
+}
+
+#[test]
+fn ssa_negative_bool_flag_parses_as_true() {
+    // `-1` is SSA's "true"; `0` is false.
+    let src = r"[Script Info]
+ScriptType: v4.00
+
+[V4 Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, TertiaryColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, AlphaLevel, Encoding
+Style: Bolded,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,1,1,0,2,10,10,10,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:02.00,Bolded,,0,0,0,,hi
+";
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let s = t.styles.iter().find(|s| s.name == "Bolded").unwrap();
+    assert!(s.bold);
+    assert!(!s.italic);
+}
+
+#[test]
 fn write_preserves_events_and_styles() {
     let t = ass::parse(SAMPLE.as_bytes()).unwrap();
     let out = String::from_utf8(ass::write(&t)).unwrap();

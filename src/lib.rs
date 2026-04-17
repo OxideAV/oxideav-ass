@@ -464,29 +464,29 @@ fn handle_overrides(
     positioning: &mut Option<CuePosition>,
     out: &mut Vec<Segment>,
 ) {
-    // Walk the block splitting on backslashes (each `\tag...` is one override).
-    // We can't just split on `\` because `\pos(x,y)` contains commas — but
-    // splits on `\` not inside parens are fine.
+    // Walk the block splitting on backslashes. Override names are alphabetic,
+    // or a small digit followed by letters (e.g. `1c`, `2c`, `3c`, `4a`).
+    // Parameters are either parenthesised (may contain commas — `\pos(x,y)`,
+    // `\move(...)`, `\clip(...)`, `\t(...)`) or end at the next `\`.
     let mut i = 0;
     let bytes = block.as_bytes();
     // Skip leading whitespace.
     while i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
     }
-    // We preserve the original text as a fallback Raw so the round-trip
-    // keeps the block intact even if we don't understand every override.
-    let mut any_understood = false;
+    // Overrides we did not consume into state get re-emitted verbatim so
+    // encode-side round-trip keeps them (`{\b1\fad(100,100)}` preserves the
+    // fade even though we only interpret the `b1`).
+    let mut passthrough = String::new();
     while i < bytes.len() {
         if bytes[i] != b'\\' {
             i += 1;
             continue;
         }
+        let tag_start = i;
         i += 1;
-        // Read override identifier. Names are alphabetic or start with a
-        // small digit followed by letters (e.g. `1c`, `2c`, `3c`, `4a`).
         let start = i;
         if i < bytes.len() && bytes[i].is_ascii_digit() {
-            // Digit-prefixed name — take the digit + any following letters.
             i += 1;
             while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
                 i += 1;
@@ -497,7 +497,6 @@ fn handle_overrides(
             }
         }
         let name = &block[start..i];
-        // Parameter — either parenthesised or ends at next `\` or end.
         let param_start = i;
         let param = if i < bytes.len() && bytes[i] == b'(' {
             let end = match block[i..].find(')') {
@@ -508,43 +507,43 @@ fn handle_overrides(
             i = (end + 1).min(block.len());
             p.to_string()
         } else {
-            // Until next `\`.
             while i < bytes.len() && bytes[i] != b'\\' {
                 i += 1;
             }
             block[param_start..i].to_string()
         };
+        let tag_end = i;
         let name_lc = name.to_ascii_lowercase();
-        match name_lc.as_str() {
+        let understood = match name_lc.as_str() {
             "b" => {
                 state.bold = parse_bool_flag(&param);
-                any_understood = true;
+                true
             }
             "i" => {
                 state.italic = parse_bool_flag(&param);
-                any_understood = true;
+                true
             }
             "u" => {
                 state.underline = parse_bool_flag(&param);
-                any_understood = true;
+                true
             }
             "s" => {
                 state.strike = parse_bool_flag(&param);
-                any_understood = true;
+                true
             }
             "c" | "1c" => {
                 if let Some((r, g, b, _)) = parse_ass_color(&param) {
                     state.color = Some((r, g, b));
                 }
-                any_understood = true;
+                true
             }
             "fn" => {
                 state.font_family = Some(param.trim().to_string());
-                any_understood = true;
+                true
             }
             "fs" => {
                 state.font_size = param.trim().parse().ok();
-                any_understood = true;
+                true
             }
             "pos" => {
                 let parts: Vec<&str> = param.split(',').map(|s| s.trim()).collect();
@@ -552,37 +551,43 @@ fn handle_overrides(
                     let cp = positioning.get_or_insert_with(CuePosition::default);
                     cp.x = parts[0].parse().ok();
                     cp.y = parts[1].parse().ok();
-                    any_understood = true;
+                    true
+                } else {
+                    false
                 }
             }
             "an" => {
                 let n: i32 = param.trim().parse().unwrap_or(2);
                 let cp = positioning.get_or_insert_with(CuePosition::default);
                 cp.align = ass_alignment_to_textalign(n);
-                any_understood = true;
+                true
             }
             "k" | "kf" | "ko" => {
                 let cs: u32 = param.trim().parse().unwrap_or(0);
-                // Emit an empty karaoke segment now; the next text chunk
-                // will be appended to a later karaoke span in a richer
-                // implementation. Here we push a marker Karaoke with empty
-                // children — consumers that care about karaoke can detect
-                // it.
+                // Emit an empty karaoke segment as a timing marker; a full
+                // renderer would group the following text chunk into its
+                // children. Consumers that care about karaoke can walk the
+                // stream and pair markers with the text that follows.
                 out.push(Segment::Karaoke {
                     cs,
                     children: Vec::new(),
                 });
-                any_understood = true;
+                true
             }
-            _ => {
-                // Unknown override — leave fallback in place below.
+            "r" => {
+                // Style reset — clear inline overrides so subsequent text
+                // falls back to the cue's base style.
+                *state = AssState::default();
+                true
             }
+            _ => false,
+        };
+        if !understood {
+            passthrough.push_str(&block[tag_start..tag_end]);
         }
     }
-    // Nothing understood → preserve the block verbatim. (But avoid
-    // duplicating state that we successfully applied.)
-    if !any_understood {
-        out.push(Segment::Raw(format!("{{{}}}", block)));
+    if !passthrough.is_empty() {
+        out.push(Segment::Raw(format!("{{{}}}", passthrough)));
     }
 }
 
@@ -835,8 +840,8 @@ pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
 /// Register the ASS codec (decoder + encoder).
 pub fn register_codecs(reg: &mut CodecRegistry) {
     let caps = CodecCapabilities {
-        decode: false,
-        encode: false,
+        decode: true,
+        encode: true,
         media_type: MediaType::Subtitle,
         intra_only: true,
         lossy: false,
