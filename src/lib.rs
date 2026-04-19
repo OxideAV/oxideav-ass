@@ -23,7 +23,7 @@ pub mod codec;
 pub mod container;
 pub mod transform;
 
-use oxideav_codec::CodecRegistry;
+use oxideav_codec::{CodecInfo, CodecRegistry};
 use oxideav_container::ContainerRegistry;
 use oxideav_core::{CodecCapabilities, CodecId, MediaType};
 
@@ -856,11 +856,11 @@ pub fn register_codecs(reg: &mut CodecRegistry) {
         priority: 100,
         accepted_pixel_formats: Vec::new(),
     };
-    reg.register_both(
-        CodecId::new(codec::ASS_CODEC_ID),
-        caps,
-        codec::make_decoder,
-        codec::make_encoder,
+    reg.register(
+        CodecInfo::new(CodecId::new(codec::ASS_CODEC_ID))
+            .capabilities(caps)
+            .decoder(codec::make_decoder)
+            .encoder(codec::make_encoder),
     );
 }
 
