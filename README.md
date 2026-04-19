@@ -13,7 +13,7 @@ framework but usable standalone.
 [dependencies]
 oxideav-core = "0.1"
 oxideav-codec = "0.1"
-oxideav-container = "0.0"
+oxideav-container = "0.1"
 oxideav-subtitle = "0.0"
 oxideav-ass = "0.0"
 ```
