@@ -13,7 +13,7 @@ use std::io::{Read, SeekFrom, Write};
 
 use oxideav_container::{ContainerRegistry, Demuxer, Muxer, ProbeData, ReadSeek, WriteSeek};
 use oxideav_core::{
-    CodecId, CodecParameters, Error, MediaType, Packet, Result, StreamInfo, TimeBase,
+    CodecId, CodecParameters, CodecResolver, Error, MediaType, Packet, Result, StreamInfo, TimeBase,
 };
 
 use oxideav_subtitle::ir::SubtitleTrack;
@@ -44,7 +44,7 @@ fn read_all(mut input: Box<dyn ReadSeek>) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn open_ass(input: Box<dyn ReadSeek>) -> Result<Box<dyn Demuxer>> {
+fn open_ass(input: Box<dyn ReadSeek>, _codecs: &dyn CodecResolver) -> Result<Box<dyn Demuxer>> {
     let buf = read_all(input)?;
     let track = super::parse(&buf)?;
     Ok(Box::new(AssDemuxer::new(track)))
