@@ -23,9 +23,9 @@ pub mod codec;
 pub mod container;
 pub mod transform;
 
-use oxideav_codec::{CodecInfo, CodecRegistry};
-use oxideav_container::ContainerRegistry;
+use oxideav_core::ContainerRegistry;
 use oxideav_core::{CodecCapabilities, CodecId, MediaType};
+use oxideav_core::{CodecInfo, CodecRegistry};
 
 pub use transform::{ass_to_srt, ass_to_webvtt, srt_to_ass, webvtt_to_ass};
 
