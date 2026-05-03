@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/OxideAV/oxideav-ass/compare/v0.0.3...v0.0.4) - 2026-05-03
+
+### Other
+
+- bump oxideav-subtitle dep to 0.1
+- replace never-match regex with semver_check = false
+- migrate to centralized OxideAV/.github reusable workflows
+- pin release-plz to patch-only bumps
+
 ## [0.0.3](https://github.com/OxideAV/oxideav-ass/releases/tag/v0.0.3) - 2026-04-25
 
 ### Other
