@@ -15,8 +15,8 @@ categories = ["multimedia", "parser-implementations"]
 
 [dependencies]
 oxideav-core = "0.1"
-oxideav-subtitle = "0.0"
+oxideav-subtitle = "0.1"
 
 [dev-dependencies]
 oxideav-core = "0.1"
-oxideav-subtitle = "0.0"
+oxideav-subtitle = "0.1"
