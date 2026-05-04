@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `animate` module: typed extraction + time-evaluation of ASS *animated*
+  override tags. New API: `AnimatedTag` enum, `CueAnimation`,
+  `RenderState`, `ClipRect`, `extract_cue_animation()`,
+  `parse_overrides()`. Tags handled: `\fad`, `\fade`, `\move`, `\frz`,
+  `\blur`, `\fscx`, `\fscy`, `\clip(rect)`, `\c` / `\1c`, `\fs`, and
+  `\t(...)` interpolation wrapping any of the above. The textual
+  round-trip path is unchanged — animated tags are still preserved as
+  `Segment::Raw` so encode-side output stays bit-faithful.
+
 ## [0.0.4](https://github.com/OxideAV/oxideav-ass/compare/v0.0.3...v0.0.4) - 2026-05-03
 
 ### Other

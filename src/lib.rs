@@ -19,9 +19,14 @@
 //! Format-to-format converters between ASS and the SRT/WebVTT formats
 //! from `oxideav-subtitle` live in [`transform`].
 
+pub mod animate;
 pub mod codec;
 pub mod container;
 pub mod transform;
+
+pub use animate::{
+    extract_cue_animation, parse_overrides, AnimatedTag, ClipRect, CueAnimation, RenderState,
+};
 
 use oxideav_core::ContainerRegistry;
 use oxideav_core::{CodecCapabilities, CodecId, MediaType};

@@ -97,9 +97,19 @@ What the parser understands and preserves on round-trip:
 - Override tags inside dialogue text — `\b`, `\i`, `\u`, `\s`, `\c`
   and `\1c` (primary colour), `\fn`, `\fs`, `\pos(x,y)`, `\an`, `\k`
   / `\kf` / `\ko` (karaoke timing markers), and `\r` (reset inline
-  state). Unknown tags (`\fad`, `\move`, `\clip`, `\t`, etc.) survive
-  parsing as opaque pass-through so round-trip keeps them intact,
-  even when mixed with tags the parser does interpret.
+  state). Unknown tags survive parsing as opaque pass-through so
+  round-trip keeps them intact, even when mixed with tags the parser
+  does interpret.
+- **Animated tags** — `\fad(t1,t2)`, `\fade(7-arg)`, `\move(...)`,
+  `\frz`, `\blur`, `\fscx` / `\fscy`, `\clip(rect)`, and `\t(...)`
+  wrapping any of the above. These are exposed via the `animate`
+  module: call `oxideav_ass::extract_cue_animation(&cue)` to get a
+  typed `CueAnimation`, then `evaluate_at(t_ms, dur_ms)` to sample
+  the resulting `RenderState` (alpha multiplier, `Transform2D`,
+  optional clip rect, blur sigma, current colour) at any timestamp.
+  The textual round-trip continues to emit the original tags
+  verbatim. `\clip(drawing)` paths are recognised but kept as
+  pass-through (round 2).
 - `\N` hard line break, `\h` hard space, `\n` soft break.
 - ASS timestamp format `H:MM:SS.cc` (centiseconds).
 - Commas inside the `Text` field are preserved (the CSV splitter stops
@@ -109,9 +119,14 @@ Out of scope for this crate:
 
 - `[Fonts]` / `[Graphics]` UU-encoded attachments are parsed around
   (their lines are not copied into the re-emitted output).
-- Full visual rendering (draw commands `\p`, animated `\t`, 3D
-  rotations) — these remain as raw override blocks, available to a
-  downstream renderer.
+- Full pixel rasterisation: this crate exposes the parsed +
+  evaluated `RenderState` (transform, alpha, clip, blur sigma,
+  colour) but does not itself shape glyphs or composite RGBA. A
+  downstream consumer is expected to feed the `RenderState` into
+  `oxideav-scribe` (text shape) + `oxideav-raster` (composite) +
+  `oxideav-image-filter::blur` (post-blur).
+- Draw commands `\p` and 3D rotations (`\frx` / `\fry`) — these
+  remain as raw override blocks.
 
 ### Codec / container IDs
 
