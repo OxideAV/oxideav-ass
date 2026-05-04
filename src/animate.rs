@@ -81,9 +81,20 @@ pub enum AnimatedTag {
     Fs(f32),
     /// `\clip(x1, y1, x2, y2)` rectangle.
     ClipRect { x1: f32, y1: f32, x2: f32, y2: f32 },
-    /// `\clip(drawing)` — drawing path form, stored verbatim. Round 2
-    /// will translate this to a `Path` mask.
+    /// `\clip(drawing)` — drawing path form, stored verbatim. The
+    /// renderer parses this through [`crate::drawing::parse_drawing`]
+    /// into an `oxideav_core::Path` and uses it as a `Group::clip`
+    /// mask.
     ClipDrawing(String),
+    /// `\frx(degrees)` — rotation around the X axis (3D). Combined
+    /// with `\frz`/`\fry` and projected to 2D via a perspective
+    /// camera in the renderer.
+    Frx(f32),
+    /// `\fry(degrees)` — rotation around the Y axis (3D).
+    Fry(f32),
+    /// `\org(x, y)` — pivot for `\frx` / `\fry` / `\frz`. Without
+    /// `\org`, the pivot is the cue's alignment point.
+    Org { x: f32, y: f32 },
     /// `\t([t1,t2,[accel,]] inner_tags)` — interpolate the inner tags
     /// over `[t1, t2]`. When `t1`/`t2` are omitted ASS treats them as
     /// `[0, cue_duration]`. `accel` defaults to 1.0 (linear).
@@ -124,6 +135,11 @@ pub struct RenderState {
     /// `\frz` rotation in radians (also baked into `transform` but
     /// exposed for renderers that compose their own matrix).
     pub rotate_radians: f32,
+    /// `\frx` rotation in radians (X axis, 3D). Renderers project
+    /// this to 2D via a perspective camera anchored at `pivot`.
+    pub rotate_x_radians: f32,
+    /// `\fry` rotation in radians (Y axis, 3D).
+    pub rotate_y_radians: f32,
     /// `(sx, sy)` scale factors, where `1.0` = 100%.
     pub scale: (f32, f32),
     /// `(tx, ty)` translation. `None` when neither `\pos` nor `\move`
@@ -134,10 +150,16 @@ pub struct RenderState {
     pub blur_sigma: f32,
     /// Active rectangular clip in cue local coordinates, if any.
     pub clip_rect: Option<ClipRect>,
+    /// `\clip(drawing)` raw drawing string, if active. Parse through
+    /// [`crate::drawing::parse_drawing`] for a vector path mask.
+    pub clip_drawing: Option<String>,
     /// `\c` primary-colour override, if active.
     pub primary_color: Option<(u8, u8, u8)>,
     /// `\fs` size override, if active.
     pub font_size: Option<f32>,
+    /// `\org(x, y)` pivot point for `\frz` / `\frx` / `\fry`. `None`
+    /// means "use the alignment point" (the renderer fills it in).
+    pub pivot: Option<(f32, f32)>,
 }
 
 impl RenderState {
@@ -147,12 +169,16 @@ impl RenderState {
             alpha_mul: 1.0,
             transform: Transform2D::identity(),
             rotate_radians: 0.0,
+            rotate_x_radians: 0.0,
+            rotate_y_radians: 0.0,
             scale: (1.0, 1.0),
             translate: None,
             blur_sigma: 0.0,
             clip_rect: None,
+            clip_drawing: None,
             primary_color: None,
             font_size: None,
+            pivot: None,
         }
     }
 }
@@ -261,11 +287,17 @@ fn apply_tag(st: &mut RenderState, tag: &AnimatedTag, t_ms: i32, dur_ms: i32) {
                 y2: hi_y,
             });
         }
-        AnimatedTag::ClipDrawing(_) => {
-            // Round 2 — drawing-path clip not yet rasterised. We
-            // intentionally do nothing here so existing behaviour is
-            // preserved; the renderer can still see the tag verbatim
-            // via `CueAnimation::tags`.
+        AnimatedTag::ClipDrawing(s) => {
+            st.clip_drawing = Some(s.clone());
+        }
+        AnimatedTag::Frx(deg) => {
+            st.rotate_x_radians = deg.to_radians();
+        }
+        AnimatedTag::Fry(deg) => {
+            st.rotate_y_radians = deg.to_radians();
+        }
+        AnimatedTag::Org { x, y } => {
+            st.pivot = Some((*x, *y));
         }
         AnimatedTag::T {
             t1_ms,
@@ -319,6 +351,8 @@ fn apply_t(
     st.scale.0 = lerp_f32(pre.scale.0, post.scale.0, k);
     st.scale.1 = lerp_f32(pre.scale.1, post.scale.1, k);
     st.rotate_radians = lerp_f32(pre.rotate_radians, post.rotate_radians, k);
+    st.rotate_x_radians = lerp_f32(pre.rotate_x_radians, post.rotate_x_radians, k);
+    st.rotate_y_radians = lerp_f32(pre.rotate_y_radians, post.rotate_y_radians, k);
     st.blur_sigma = lerp_f32(pre.blur_sigma, post.blur_sigma, k).max(0.0);
     st.alpha_mul = lerp_f32(pre.alpha_mul, post.alpha_mul, k);
     if let Some(c) = post.primary_color {
@@ -583,6 +617,16 @@ fn parse_one(name_lc: &str, param: &str) -> Option<AnimatedTag> {
             }
         }
         "frz" | "fr" => param.trim().parse::<f32>().ok().map(AnimatedTag::Frz),
+        "frx" => param.trim().parse::<f32>().ok().map(AnimatedTag::Frx),
+        "fry" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fry),
+        "org" => {
+            let n = parse_float_list(param);
+            if n.len() == 2 {
+                Some(AnimatedTag::Org { x: n[0], y: n[1] })
+            } else {
+                None
+            }
+        }
         "blur" | "be" => {
             // `\be(N)` is iterative box-blur in libass; we approximate
             // both as Gaussian sigma. `\be` strength N is roughly

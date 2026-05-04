@@ -22,11 +22,17 @@
 pub mod animate;
 pub mod codec;
 pub mod container;
+pub mod drawing;
+#[cfg(feature = "render")]
+pub mod render;
 pub mod transform;
 
 pub use animate::{
     extract_cue_animation, parse_overrides, AnimatedTag, ClipRect, CueAnimation, RenderState,
 };
+pub use drawing::parse_drawing;
+#[cfg(feature = "render")]
+pub use render::{make_animated_decoder, AnimatedRenderedDecoder};
 
 use oxideav_core::ContainerRegistry;
 use oxideav_core::{CodecCapabilities, CodecId, MediaType};
@@ -805,6 +811,13 @@ pub(crate) fn looks_like_ass(buf: &[u8]) -> bool {
     let head: String = text.chars().take(2048).collect();
     let head_lc = head.to_ascii_lowercase();
     head_lc.contains("[script info]")
+}
+
+/// Serialise one cue to a single `Dialogue:` line. Public alias of
+/// the crate-private `cue_to_bytes` so integration tests + external
+/// drivers can build packets without going through the demuxer.
+pub fn cue_to_bytes_pub(cue: &SubtitleCue) -> Vec<u8> {
+    cue_to_bytes(cue)
 }
 
 /// Serialise one cue for single-packet container emission.

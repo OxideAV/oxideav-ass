@@ -9,14 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `render` module (default-on `render` cargo feature): new
+  `AnimatedRenderedDecoder` wraps an inner ASS subtitle decoder and
+  emits rasterised RGBA `Frame::Video`s sampled at a caller-controlled
+  cue-relative time (`set_offset_ms`). Each cue is fed through
+  `extract_cue_animation` + `evaluate_at(t)`, the resulting state
+  drives the affine transform / opacity / clip on a `VectorFrame`
+  populated with shaped glyphs from `oxideav-scribe`, and the whole
+  scene is rasterised via `oxideav-raster`. Available behind the
+  `render` feature so parser-only consumers can opt out via
+  `default-features = false`.
+- `drawing` module: ASS drawing-mode mini-language parser (`m`, `n`,
+  `l`, `b`, `s`, `p`, `c` commands + implicit-continuation handling
+  + `\p<scale>` exponent). New `parse_drawing()` returns an
+  `oxideav_core::Path`. Used by `\clip(drawing)` to feed the renderer's
+  clip stack with a vector mask; also reusable by callers that want to
+  rasterise `\p` drawing blocks directly.
+- 3D rotations and explicit pivot: `\frx`/`\fry` (X/Y axis rotations
+  in degrees) and `\org(x,y)` (pivot for `\frz`/`\frx`/`\fry`). The
+  3D rotations are projected to a 2D affine via the orthographic
+  small-angle approximation (`cos(α)`-shrink along the rotation axis)
+  for renderers that don't ship a perspective camera. New
+  `AnimatedTag::Frx`/`Fry`/`Org` variants and `RenderState`
+  `rotate_x_radians`/`rotate_y_radians`/`pivot` fields.
 - `animate` module: typed extraction + time-evaluation of ASS *animated*
   override tags. New API: `AnimatedTag` enum, `CueAnimation`,
   `RenderState`, `ClipRect`, `extract_cue_animation()`,
   `parse_overrides()`. Tags handled: `\fad`, `\fade`, `\move`, `\frz`,
-  `\blur`, `\fscx`, `\fscy`, `\clip(rect)`, `\c` / `\1c`, `\fs`, and
-  `\t(...)` interpolation wrapping any of the above. The textual
-  round-trip path is unchanged — animated tags are still preserved as
-  `Segment::Raw` so encode-side output stays bit-faithful.
+  `\frx`, `\fry`, `\org`, `\blur`, `\fscx`, `\fscy`, `\clip(rect)`,
+  `\clip(drawing)`, `\c` / `\1c`, `\fs`, and `\t(...)` interpolation
+  wrapping any of the above. The textual round-trip path is unchanged
+  — animated tags are still preserved as `Segment::Raw` so encode-side
+  output stays bit-faithful.
+- `cue_to_bytes_pub()`: public alias for the crate-private cue
+  serialiser so external code can build packets directly without
+  going through the demuxer.
 
 ## [0.0.4](https://github.com/OxideAV/oxideav-ass/compare/v0.0.3...v0.0.4) - 2026-05-03
 

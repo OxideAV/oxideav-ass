@@ -13,10 +13,23 @@ homepage = "https://github.com/OxideAV/oxideav-ass"
 keywords = ["multimedia", "subtitle", "ass", "ssa", "pure-rust"]
 categories = ["multimedia", "parser-implementations"]
 
+[features]
+# `render` enables the AnimatedRenderedDecoder rasteriser path: pulls
+# in oxideav-scribe + oxideav-raster so the cue's animated tags can be
+# evaluated at a moment in time and the resulting state baked into a
+# rasterised RGBA frame. Default-on so an out-of-the-box
+# `oxideav-ass = "0.0"` ships the renderer; opt out via
+# `default-features = false` when only parsing / round-trip is needed.
+default = ["render"]
+render = ["dep:oxideav-scribe", "dep:oxideav-raster"]
+
 [dependencies]
 oxideav-core = "0.1"
 oxideav-subtitle = "0.1"
+oxideav-scribe = { version = "0.1", optional = true }
+oxideav-raster = { version = "0.1", optional = true }
 
 [dev-dependencies]
 oxideav-core = "0.1"
 oxideav-subtitle = "0.1"
+oxideav-scribe = "0.1"

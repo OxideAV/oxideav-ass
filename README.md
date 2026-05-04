@@ -101,15 +101,28 @@ What the parser understands and preserves on round-trip:
   round-trip keeps them intact, even when mixed with tags the parser
   does interpret.
 - **Animated tags** — `\fad(t1,t2)`, `\fade(7-arg)`, `\move(...)`,
-  `\frz`, `\blur`, `\fscx` / `\fscy`, `\clip(rect)`, and `\t(...)`
-  wrapping any of the above. These are exposed via the `animate`
-  module: call `oxideav_ass::extract_cue_animation(&cue)` to get a
-  typed `CueAnimation`, then `evaluate_at(t_ms, dur_ms)` to sample
-  the resulting `RenderState` (alpha multiplier, `Transform2D`,
-  optional clip rect, blur sigma, current colour) at any timestamp.
-  The textual round-trip continues to emit the original tags
-  verbatim. `\clip(drawing)` paths are recognised but kept as
-  pass-through (round 2).
+  `\frz`, `\frx`, `\fry`, `\org(x,y)`, `\blur`, `\fscx` / `\fscy`,
+  `\clip(rect)`, `\clip(drawing)`, and `\t(...)` wrapping any of the
+  above. These are exposed via the `animate` module: call
+  `oxideav_ass::extract_cue_animation(&cue)` to get a typed
+  `CueAnimation`, then `evaluate_at(t_ms, dur_ms)` to sample the
+  resulting `RenderState` (alpha multiplier, `Transform2D`, optional
+  clip rect or drawing path, blur sigma, current colour, pivot,
+  per-axis rotations) at any timestamp. The textual round-trip
+  continues to emit the original tags verbatim.
+- **Drawing-mode parser** — the `\clip(drawing)` and `\p` mini
+  language (`m`/`n`/`l`/`b`/`s`/`p`/`c`) is parsed via
+  `oxideav_ass::parse_drawing(s, scale_exp)` into an
+  `oxideav_core::Path`, ready to feed `oxideav-raster`'s clip stack.
+- **Animated rasterisation** (`render` cargo feature, default-on) —
+  `oxideav_ass::AnimatedRenderedDecoder` wraps another ASS subtitle
+  decoder and produces RGBA `Frame::Video`s sampled at a
+  caller-controlled cue-relative time; `set_offset_ms(t)` between
+  `receive_frame` calls steps the animation forward. Internally it
+  composes the evaluated `RenderState` (translate / scale / 3D
+  rotations around `\org` / clip path / opacity) onto a
+  `VectorFrame` of shaped glyphs and rasterises through
+  `oxideav-raster`. Opt out via `default-features = false`.
 - `\N` hard line break, `\h` hard space, `\n` soft break.
 - ASS timestamp format `H:MM:SS.cc` (centiseconds).
 - Commas inside the `Text` field are preserved (the CSV splitter stops
@@ -119,14 +132,19 @@ Out of scope for this crate:
 
 - `[Fonts]` / `[Graphics]` UU-encoded attachments are parsed around
   (their lines are not copied into the re-emitted output).
-- Full pixel rasterisation: this crate exposes the parsed +
-  evaluated `RenderState` (transform, alpha, clip, blur sigma,
-  colour) but does not itself shape glyphs or composite RGBA. A
-  downstream consumer is expected to feed the `RenderState` into
-  `oxideav-scribe` (text shape) + `oxideav-raster` (composite) +
-  `oxideav-image-filter::blur` (post-blur).
-- Draw commands `\p` and 3D rotations (`\frx` / `\fry`) — these
-  remain as raw override blocks.
+- Gaussian blur (`\blur`) post-step is not applied by the
+  `AnimatedRenderedDecoder` — `RenderState::blur_sigma` is exposed,
+  feed it into `oxideav-image-filter::blur` if you need the visual
+  effect.
+- 3D `\frx` / `\fry` rotations are reduced to a 2D affine via the
+  orthographic small-angle approximation (axis-aligned `cos(α)`
+  shrink), not a full perspective camera. Most subtitle use rotates
+  <90° so the visual difference is small; consumers needing strict
+  3D should bake their own perspective transform onto
+  `RenderState::rotate_x_radians` / `rotate_y_radians`.
+- Free-form `\p` drawing-mode rendering (the rasterisation of
+  drawing blocks as decorative shapes) is parser-only — use
+  `parse_drawing` to lift the path into your own scene.
 
 ### Codec / container IDs
 
