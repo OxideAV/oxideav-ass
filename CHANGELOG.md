@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/OxideAV/oxideav-ass/compare/v0.0.4...v0.0.5) - 2026-05-04
+
+### Other
+
+- AnimatedRenderedDecoder + \clip(drawing) + \frx/\fry/\org
+- typed extraction + time-evaluation of animated override tags
+
 ### Added
 
 - `render` module (default-on `render` cargo feature): new
