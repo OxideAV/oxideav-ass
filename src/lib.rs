@@ -131,9 +131,27 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
                 }
             }
             "fonts" | "graphics" => {
-                // Skip UU-encoded data blocks.
+                // UU-encoded attachment body. We don't decode the
+                // payload but we preserve it verbatim in `extradata`
+                // so a parse → write round-trip keeps the attachment
+                // intact rather than dropping it. The header line
+                // (`[Fonts]` / `[Graphics]`) was already pushed by
+                // the section-header branch above.
+                extradata.push_str(line);
+                extradata.push('\n');
             }
-            _ => {}
+            _ => {
+                // Unknown section (e.g. `[Aegisub Project Garbage]`,
+                // `[Aegisub Extradata]`, `[Aegisub Style Storage]`,
+                // editor-specific `[Project]` / `[Garbage]` blocks).
+                // Preserve every body line verbatim so the writer can
+                // emit it back unchanged — dropping the body would
+                // leave a dangling section header and lose editor
+                // state. This is purely structural preservation; we
+                // do not attempt to interpret the keys.
+                extradata.push_str(line);
+                extradata.push('\n');
+            }
         }
     }
 
@@ -986,5 +1004,99 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\b1}Hello{\b0} world
     fn looks_like() {
         assert!(looks_like_ass(SAMPLE.as_bytes()));
         assert!(!looks_like_ass(b"WEBVTT\n"));
+    }
+
+    #[test]
+    fn unknown_section_body_round_trips_via_extradata() {
+        // Lines inside a section we don't model (Aegisub editor state,
+        // user-private blocks) must survive parse + write. Pre-r75 the
+        // body was dropped and only the section header remained,
+        // leaving a dangling header in the writer's output.
+        let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[Aegisub Project Garbage]\n\
+Last Style Storage: Default\n\
+Video Zoom Percent: 0.500000\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,hi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(
+            out.contains("[Aegisub Project Garbage]"),
+            "section header lost:\n{out}"
+        );
+        assert!(
+            out.contains("Last Style Storage: Default"),
+            "body line 1 lost:\n{out}"
+        );
+        assert!(
+            out.contains("Video Zoom Percent: 0.500000"),
+            "body line 2 lost:\n{out}"
+        );
+        // No duplication.
+        assert_eq!(out.matches("[Aegisub Project Garbage]").count(), 1);
+        assert_eq!(out.matches("Last Style Storage: Default").count(), 1);
+    }
+
+    #[test]
+    fn fonts_section_body_round_trips() {
+        // UU-encoded font payload — opaque to us but the bytes must
+        // survive verbatim so downstream re-loads still have the
+        // embedded glyphs.
+        let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[Fonts]\n\
+fontname: Demo_B.ttf\n\
+M0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz=\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,x\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(out.contains("fontname: Demo_B.ttf"));
+        assert!(out.contains("M0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz="));
+    }
+
+    #[test]
+    fn unknown_section_round_trip_is_reparseable() {
+        // A round-tripped script (with preserved Aegisub section) must
+        // re-parse to an identical cue list. This catches accidental
+        // header/body interleaving bugs.
+        let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[Aegisub Project Garbage]\n\
+Last Style Storage: Default\n\
+Audio File: ?dummy\n\
+\n\
+[Aegisub Extradata]\n\
+Data: 1,_aegi_perspective_ambient_plane,0;0|0;0|0;0|0;0\n\
+\n\
+[V4+ Styles]\n\
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+Style: Default,Arial,20,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,first\n\
+Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,second\n";
+        let t1 = parse(src.as_bytes()).unwrap();
+        let out = String::from_utf8(write(&t1)).unwrap();
+        let t2 = parse(out.as_bytes()).unwrap();
+        assert_eq!(t1.cues.len(), t2.cues.len());
+        for (a, b) in t1.cues.iter().zip(t2.cues.iter()) {
+            assert_eq!(a.start_us, b.start_us);
+            assert_eq!(a.end_us, b.end_us);
+            assert_eq!(a.style_ref, b.style_ref);
+        }
+        // Body preserved on the re-parse → re-emit cycle too.
+        let out2 = String::from_utf8(write(&t2)).unwrap();
+        assert!(out2.contains("Last Style Storage: Default"));
+        assert!(out2.contains("_aegi_perspective_ambient_plane"));
     }
 }

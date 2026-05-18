@@ -168,6 +168,116 @@ fn write_preserves_events_and_styles() {
     }
 }
 
+#[test]
+fn aegisub_project_garbage_section_round_trips() {
+    // Aegisub injects an `[Aegisub Project Garbage]` section between
+    // `[V4+ Styles]` and `[Events]` carrying editor state (last opened
+    // video/audio, scroll position, last style storage). Pre-r75 we
+    // dropped the section body silently, leaving a dangling header.
+    // Round-trip must now preserve every body line verbatim.
+    let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[V4+ Styles]\n\
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+Style: Default,Arial,20,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n\
+\n\
+[Aegisub Project Garbage]\n\
+Last Style Storage: Default\n\
+Audio File: ?dummy\n\
+Video File: ?dummy\n\
+Video AR Mode: 4\n\
+Video AR Value: 1.777778\n\
+Video Zoom Percent: 0.500000\n\
+Scroll Position: 0\n\
+Active Line: 0\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,hello\n";
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    // Every body line of the Aegisub section survives.
+    for needle in [
+        "[Aegisub Project Garbage]",
+        "Last Style Storage: Default",
+        "Audio File: ?dummy",
+        "Video File: ?dummy",
+        "Video AR Mode: 4",
+        "Video AR Value: 1.777778",
+        "Video Zoom Percent: 0.500000",
+        "Scroll Position: 0",
+        "Active Line: 0",
+    ] {
+        assert!(
+            out.contains(needle),
+            "lost `{}` on round-trip:\n{out}",
+            needle
+        );
+    }
+    // The dialogue line still made it through too.
+    assert!(out.contains("Dialogue: 0,0:00:01.00,0:00:02.00,Default"));
+    // Section header appears exactly once (no duplication from extradata
+    // + writer header collision).
+    assert_eq!(
+        out.matches("[Aegisub Project Garbage]").count(),
+        1,
+        "section header duplicated:\n{out}"
+    );
+}
+
+#[test]
+fn multiple_unknown_sections_all_round_trip() {
+    // libass/Aegisub-ecosystem files routinely carry several
+    // editor-private sections. All must survive round-trip.
+    let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[Aegisub Project Garbage]\n\
+Last Style Storage: Default\n\
+\n\
+[Aegisub Extradata]\n\
+Data: 1,_aegi_perspective_ambient_plane,0;0|0;0|0;0|0;0\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,first\n";
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    assert!(out.contains("[Aegisub Project Garbage]"));
+    assert!(out.contains("Last Style Storage: Default"));
+    assert!(out.contains("[Aegisub Extradata]"));
+    assert!(out.contains("_aegi_perspective_ambient_plane"));
+    // And re-parsing the output yields the same cue count + content.
+    let t2 = ass::parse(out.as_bytes()).unwrap();
+    assert_eq!(t2.cues.len(), t.cues.len());
+}
+
+#[test]
+fn fonts_section_uu_body_round_trips() {
+    // UU-encoded font attachments must survive even though we don't
+    // decode them. The original carriage is opaque to us but the bytes
+    // must come back out verbatim so downstream consumers (e.g. an
+    // Aegisub re-load) keep the embedded font available.
+    let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[Fonts]\n\
+fontname: Demo_B.ttf\n\
+M02AwIDQwMDAwMDAwIDA2MDAwMDA0NjQ4NjU2YzZjNkYwMzAxMDQyMDUwMjAyMDAwMDAw\n\
+M02AwIDA0MDAwMDAwIDA3MDAwMDA0NjU2NDc0NjUyMjAyMDIwMjAyMDIwMjAyMDIwMjAw\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,x\n";
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    assert!(out.contains("[Fonts]"));
+    assert!(out.contains("fontname: Demo_B.ttf"));
+    assert!(out.contains("M02AwIDQwMDAwMDAwIDA2MDAwMDA0NjQ4NjU2YzZjNkYwMzAxMDQyMDUwMjAyMDAwMDAw"));
+    assert!(out.contains("M02AwIDA0MDAwMDAwIDA3MDAwMDA0NjU2NDc0NjUyMjAyMDIwMjAyMDIwMjAyMDIwMjAw"));
+}
+
 fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
     for s in segs {
         f(s);

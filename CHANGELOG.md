@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Unknown sections (e.g. `[Aegisub Project Garbage]`, `[Aegisub
+  Extradata]`, `[Aegisub Style Storage]`, `[Fonts]`, `[Graphics]`)
+  used to drop their body lines on parse, leaving a dangling section
+  header in the writer's output and losing editor state plus embedded
+  font / graphic attachments. Body lines are now preserved verbatim
+  through `SubtitleTrack::extradata` so a parse → write round-trip is
+  byte-faithful for these blocks. The `[Events]` body is still
+  reconstructed from the typed `cues` list (unchanged behaviour).
+
 ## [0.0.6](https://github.com/OxideAV/oxideav-ass/compare/v0.0.5...v0.0.6) - 2026-05-06
 
 ### Other

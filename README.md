@@ -85,6 +85,13 @@ What the parser understands and preserves on round-trip:
 
 - `[Script Info]` — header key/value pairs captured as track metadata;
   comment lines (`;` / `!`) preserved inside extradata.
+- **Unknown sections preserved** — editor-private blocks like
+  `[Aegisub Project Garbage]`, `[Aegisub Extradata]`, `[Aegisub Style
+  Storage]`, `[Fonts]`, `[Graphics]`, and any other named section not
+  modelled by the parser have their body lines kept verbatim through
+  `extradata`, so a parse → write round-trip emits them back unchanged
+  (no dangling section headers, no lost editor state, no lost
+  UU-encoded attachments).
 - `[V4+ Styles]` and `[V4 Styles]` — `Format:`-aware per-`Style:`
   decode of name, font, size, primary / outline / back colours
   (`&HAABBGGRR` with ASS alpha inversion), bold / italic / underline /
@@ -130,8 +137,9 @@ What the parser understands and preserves on round-trip:
 
 Out of scope for this crate:
 
-- `[Fonts]` / `[Graphics]` UU-encoded attachments are parsed around
-  (their lines are not copied into the re-emitted output).
+- `[Fonts]` / `[Graphics]` UU-encoded attachment payloads are kept as
+  opaque bytes (round-tripped verbatim via extradata) — the parser
+  does not decode the embedded font / image data into typed objects.
 - Gaussian blur (`\blur`) post-step is not applied by the
   `AnimatedRenderedDecoder` — `RenderState::blur_sigma` is exposed,
   feed it into `oxideav-image-filter::blur` if you need the visual
