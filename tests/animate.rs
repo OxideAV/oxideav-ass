@@ -205,3 +205,161 @@ fn empty_cue_yields_empty_animation() {
     assert!(st.transform.is_identity());
     assert!(st.translate.is_none());
 }
+
+// -----------------------------------------------------------------------
+// r76 typed-tag coverage: \bord, \shad, \fax/\fay, \iclip, \be — exercised
+// end-to-end through the full parse → extract → evaluate pipeline against
+// fixtures that mirror typical karaoke / typesetting subtitle authoring.
+
+#[test]
+fn typesetting_bord_shad_blur_combination() {
+    // Common typesetting setup: text gets a thick outline + soft shadow
+    // + Gaussian blur as a single override block.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord3\\shad2\\blur1.5\\be1}}typeset\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert_eq!(anim.tags.len(), 4, "tags: {:?}", anim.tags);
+    let st = anim.evaluate_at(500, 1000);
+    assert_eq!(st.border, Some((3.0, 3.0)));
+    assert_eq!(st.shadow, Some((2.0, 2.0)));
+    assert!((st.blur_sigma - 1.5).abs() < 1e-6);
+    assert_eq!(st.be_strength, 1);
+}
+
+#[test]
+fn t_animated_border_growth() {
+    // Outline pulses from 0 to 4 over the cue — typical attention-grabber.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord0\\t(0,1000,\\bord4)}}grow\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    // 2 tags: the static \bord0 plus the \t(...) wrapper.
+    assert_eq!(anim.tags.len(), 2);
+    let st_q = anim.evaluate_at(250, 1000);
+    assert_eq!(st_q.border, Some((1.0, 1.0)));
+    let st_h = anim.evaluate_at(500, 1000);
+    assert_eq!(st_h.border, Some((2.0, 2.0)));
+    let st_e = anim.evaluate_at(1000, 1000);
+    assert_eq!(st_e.border, Some((4.0, 4.0)));
+}
+
+#[test]
+fn fax_skew_for_3d_perspective_label() {
+    // \fax pseudo-3D skew — common signage typesetting trick.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\fax-0.3\\fay0.15}}skewed\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert_eq!(anim.tags.len(), 2);
+    let st = anim.evaluate_at(500, 2000);
+    assert!((st.shear.0 + 0.3).abs() < 1e-6);
+    assert!((st.shear.1 - 0.15).abs() < 1e-6);
+}
+
+#[test]
+fn iclip_rect_inverse_window() {
+    // Inverse rectangular clip — used for "subtitle hides behind a
+    // chyron" or "fade through a mask" effects.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\iclip(100,50,540,250)}}masked\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert_eq!(anim.tags.len(), 1);
+    let st = anim.evaluate_at(0, 2000);
+    let c = st.iclip_rect.unwrap();
+    assert_eq!((c.x1, c.y1, c.x2, c.y2), (100.0, 50.0, 540.0, 250.0));
+    // Forward clip stays untouched.
+    assert!(st.clip_rect.is_none());
+}
+
+#[test]
+fn iclip_drawing_path_preserved() {
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\iclip(m 0 0 l 50 0 l 50 50 l 0 50)}}vector\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert!(matches!(anim.tags[0], AnimatedTag::IClipDrawing(_)));
+    let st = anim.evaluate_at(0, 2000);
+    assert!(st.iclip_drawing.as_deref().unwrap().contains("m 0 0"));
+}
+
+#[test]
+fn xbord_ybord_anamorphic_correction_pattern() {
+    // Per Aegisub spec, \xbord+\ybord exist to correct anamorphic
+    // displays. Authors sometimes follow with a \bord which overrides
+    // both. Pin both behaviours.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\xbord2\\ybord4}}anamorphic\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    let st = anim.evaluate_at(0, 1000);
+    assert_eq!(st.border, Some((2.0, 4.0)));
+
+    let src2 = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\xbord2\\ybord4\\bord1}}override\n"
+    );
+    let t2 = ass::parse(src2.as_bytes()).unwrap();
+    let st2 = extract_cue_animation(&t2.cues[0]).evaluate_at(0, 1000);
+    assert_eq!(st2.border, Some((1.0, 1.0)));
+}
+
+#[test]
+fn xshad_yshad_directional_shadow() {
+    // Negative \xshad/\yshad places the shadow to the top-left.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\xshad-3\\yshad-2}}drop\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    let st = anim.evaluate_at(0, 1000);
+    assert_eq!(st.shadow, Some((-3.0, -2.0)));
+}
+
+#[test]
+fn unknown_tags_alongside_typed_tags_dont_panic() {
+    // The base parser stuffs unknown tags into Raw blocks; animate
+    // skips what it doesn't recognise. Verify a mix is handled cleanly.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord2\\xyz(1,2)\\fax0.1\\unknown}}mixed\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    // Only \bord and \fax should surface as typed tags.
+    assert_eq!(anim.tags.len(), 2);
+    let st = anim.evaluate_at(0, 1000);
+    assert_eq!(st.border, Some((2.0, 2.0)));
+    assert!((st.shear.0 - 0.1).abs() < 1e-6);
+}
+
+#[test]
+fn typed_tags_survive_round_trip_as_passthrough() {
+    // The typed tags aren't re-emitted by the writer (the round-trip
+    // path is via Segment::Raw). Confirm the raw block is preserved
+    // verbatim so the output script remains semantically identical.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord3\\shad2\\iclip(10,10,100,100)}}roundtrip\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    assert!(out.contains("\\bord3"), "out:\n{out}");
+    assert!(out.contains("\\shad2"));
+    assert!(out.contains("\\iclip(10,10,100,100)"));
+    // Re-parse and re-extract: the typed values should match.
+    let t2 = ass::parse(out.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t2.cues[0]);
+    let st = anim.evaluate_at(0, 1000);
+    assert_eq!(st.border, Some((3.0, 3.0)));
+    assert_eq!(st.shadow, Some((2.0, 2.0)));
+    assert!(st.iclip_rect.is_some());
+}
+
+// Suppress an unused-import warning when only some helper types are used.
+#[allow(dead_code)]
+fn _ensure_cliprect_import_used(_: ClipRect) {}

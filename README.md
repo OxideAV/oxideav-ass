@@ -108,15 +108,19 @@ What the parser understands and preserves on round-trip:
   round-trip keeps them intact, even when mixed with tags the parser
   does interpret.
 - **Animated tags** — `\fad(t1,t2)`, `\fade(7-arg)`, `\move(...)`,
-  `\frz`, `\frx`, `\fry`, `\org(x,y)`, `\blur`, `\fscx` / `\fscy`,
-  `\clip(rect)`, `\clip(drawing)`, and `\t(...)` wrapping any of the
-  above. These are exposed via the `animate` module: call
+  `\frz`, `\frx`, `\fry`, `\org(x,y)`, `\blur`, `\be`, `\bord`,
+  `\xbord`, `\ybord`, `\shad`, `\xshad`, `\yshad`, `\fax`, `\fay`,
+  `\fscx` / `\fscy`, `\clip(rect)`, `\clip(drawing)`, `\iclip(rect)`,
+  `\iclip(drawing)`, and `\t(...)` wrapping any of the above. These
+  are exposed via the `animate` module: call
   `oxideav_ass::extract_cue_animation(&cue)` to get a typed
   `CueAnimation`, then `evaluate_at(t_ms, dur_ms)` to sample the
   resulting `RenderState` (alpha multiplier, `Transform2D`, optional
-  clip rect or drawing path, blur sigma, current colour, pivot,
-  per-axis rotations) at any timestamp. The textual round-trip
-  continues to emit the original tags verbatim.
+  clip + inverse-clip rect or drawing path, blur sigma, `\be` strength
+  separate from `\blur`, per-axis border + shadow widths, `(fax, fay)`
+  shear factors, current colour, pivot, per-axis rotations) at any
+  timestamp. The textual round-trip continues to emit the original
+  tags verbatim.
 - **Drawing-mode parser** — the `\clip(drawing)` and `\p` mini
   language (`m`/`n`/`l`/`b`/`s`/`p`/`c`) is parsed via
   `oxideav_ass::parse_drawing(s, scale_exp)` into an

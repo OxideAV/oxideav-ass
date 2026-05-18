@@ -22,15 +22,32 @@
 //! * `\frz(angle)` — rotate around the Z axis by `angle` degrees.
 //! * `\blur(strength)` — Gaussian blur sigma in pixels (`0` = no
 //!   blur).
+//! * `\be(strength)` — iterative box-blur strength (integer, edge-only
+//!   softening). Distinct from `\blur` per Aegisub spec — exposed in
+//!   [`RenderState::be_strength`] without merging into `blur_sigma`.
+//! * `\bord(w)` / `\xbord(w)` / `\ybord(w)` — text border width (px).
+//!   `\bord` sets both axes, `\xbord` and `\ybord` set X or Y only.
+//!   Per Aegisub spec, a `\bord` after `\xbord`/`\ybord` overrides
+//!   both axes again.
+//! * `\shad(d)` / `\xshad(d)` / `\yshad(d)` — text shadow distance
+//!   (px). `\shad` sets both axes uniformly (non-negative); the
+//!   `\xshad`/`\yshad` per-axis tags permit negative values, which
+//!   place the shadow to the top or left of the text.
+//! * `\fax(f)` / `\fay(f)` — shear (perspective-distortion) factor on
+//!   the X / Y axis. Applied after rotation, on rotated coordinates.
 //! * `\clip(x1, y1, x2, y2)` — restrict rendering to the rectangle
 //!   `[x1..x2] x [y1..y2]`. The drawing-path form is recognised but
 //!   stored verbatim (round 2).
+//! * `\iclip(x1, y1, x2, y2)` — *inverse* rectangular clip: the cue
+//!   is hidden inside the rectangle. Vector-drawing form is also
+//!   accepted and stored verbatim in [`RenderState::iclip_drawing`].
 //! * `\fscx(percent)` / `\fscy(percent)` — non-uniform scale.
 //! * `\t(t1, t2, [accel,] tags)` — interpolate the inner tags over
 //!   `[t1, t2]` within the cue. Inner tags supported in this round:
-//!   `\fscx`, `\fscy`, `\frz`, `\c` / `\1c`, `\fs`, `\blur`. Other
-//!   inner tags are stored verbatim and applied as a static override
-//!   for `t >= t1`.
+//!   `\fscx`, `\fscy`, `\frz`, `\c` / `\1c`, `\fs`, `\blur`, `\bord`,
+//!   `\xbord`, `\ybord`, `\shad`, `\xshad`, `\yshad`, `\fax`, `\fay`.
+//!   Other inner tags are stored verbatim and applied as a static
+//!   override for `t >= t1`.
 //!
 //! Times in `\fad`, `\move`, `\t` are milliseconds *from the cue
 //! start*. The ASS spec uses "ms from cue start" as the canonical
@@ -95,6 +112,33 @@ pub enum AnimatedTag {
     /// `\org(x, y)` — pivot for `\frx` / `\fry` / `\frz`. Without
     /// `\org`, the pivot is the cue's alignment point.
     Org { x: f32, y: f32 },
+    /// `\bord(w)` — text border width in px (sets both X and Y).
+    Bord(f32),
+    /// `\xbord(w)` — X-axis border width (px).
+    Xbord(f32),
+    /// `\ybord(w)` — Y-axis border width (px).
+    Ybord(f32),
+    /// `\shad(d)` — text shadow distance in px (sets both axes, must
+    /// be non-negative per the Aegisub spec).
+    Shad(f32),
+    /// `\xshad(d)` — X-axis shadow distance (px, may be negative).
+    Xshad(f32),
+    /// `\yshad(d)` — Y-axis shadow distance (px, may be negative).
+    Yshad(f32),
+    /// `\be(strength)` — iterative box-blur strength (integer). Edge-
+    /// softening filter, kept separate from `\blur` per Aegisub spec.
+    Be(u8),
+    /// `\fax(factor)` — X-axis shear (perspective distortion).
+    Fax(f32),
+    /// `\fay(factor)` — Y-axis shear.
+    Fay(f32),
+    /// `\iclip(x1, y1, x2, y2)` — inverse rectangular clip; the cue
+    /// is hidden inside the rectangle.
+    IClipRect { x1: f32, y1: f32, x2: f32, y2: f32 },
+    /// `\iclip(drawing)` — inverse vector-drawing clip, stored
+    /// verbatim. Parse with [`crate::drawing::parse_drawing`] if a
+    /// path is needed.
+    IClipDrawing(String),
     /// `\t([t1,t2,[accel,]] inner_tags)` — interpolate the inner tags
     /// over `[t1, t2]`. When `t1`/`t2` are omitted ASS treats them as
     /// `[0, cue_duration]`. `accel` defaults to 1.0 (linear).
@@ -160,6 +204,26 @@ pub struct RenderState {
     /// `\org(x, y)` pivot point for `\frz` / `\frx` / `\fry`. `None`
     /// means "use the alignment point" (the renderer fills it in).
     pub pivot: Option<(f32, f32)>,
+    /// `(x_border, y_border)` per-axis text border width in px from
+    /// `\bord` / `\xbord` / `\ybord`. `None` = fall back to style.
+    pub border: Option<(f32, f32)>,
+    /// `(x_shadow, y_shadow)` per-axis shadow distance in px from
+    /// `\shad` / `\xshad` / `\yshad`. `None` = fall back to style.
+    /// Per-axis values may be negative; `\shad` itself is clamped to
+    /// non-negative per spec.
+    pub shadow: Option<(f32, f32)>,
+    /// `\be(N)` iterative box-blur strength (0 = off). Distinct from
+    /// `blur_sigma` (`\blur`).
+    pub be_strength: u8,
+    /// `(fax, fay)` shear factors applied after rotation. `(0.0, 0.0)`
+    /// = no shear.
+    pub shear: (f32, f32),
+    /// Active inverse rectangular clip from `\iclip(x1,y1,x2,y2)`.
+    /// Renderers should hide pixels *inside* this rectangle.
+    pub iclip_rect: Option<ClipRect>,
+    /// `\iclip(drawing)` raw drawing string; renderer parses to a
+    /// path and masks against its inverse.
+    pub iclip_drawing: Option<String>,
 }
 
 impl RenderState {
@@ -179,6 +243,12 @@ impl RenderState {
             primary_color: None,
             font_size: None,
             pivot: None,
+            border: None,
+            shadow: None,
+            be_strength: 0,
+            shear: (0.0, 0.0),
+            iclip_rect: None,
+            iclip_drawing: None,
         }
     }
 }
@@ -299,6 +369,58 @@ fn apply_tag(st: &mut RenderState, tag: &AnimatedTag, t_ms: i32, dur_ms: i32) {
         AnimatedTag::Org { x, y } => {
             st.pivot = Some((*x, *y));
         }
+        AnimatedTag::Bord(w) => {
+            // \bord sets both axes — per Aegisub spec, "if you use
+            // \bord after \xbord or \ybord, it will [override] them".
+            let w = w.max(0.0);
+            st.border = Some((w, w));
+        }
+        AnimatedTag::Xbord(w) => {
+            let w = w.max(0.0);
+            let (_, y) = st.border.unwrap_or((0.0, 0.0));
+            st.border = Some((w, y));
+        }
+        AnimatedTag::Ybord(w) => {
+            let w = w.max(0.0);
+            let (x, _) = st.border.unwrap_or((0.0, 0.0));
+            st.border = Some((x, w));
+        }
+        AnimatedTag::Shad(d) => {
+            // \shad is non-negative per spec.
+            let d = d.max(0.0);
+            st.shadow = Some((d, d));
+        }
+        AnimatedTag::Xshad(d) => {
+            // \xshad / \yshad may be negative.
+            let (_, y) = st.shadow.unwrap_or((0.0, 0.0));
+            st.shadow = Some((*d, y));
+        }
+        AnimatedTag::Yshad(d) => {
+            let (x, _) = st.shadow.unwrap_or((0.0, 0.0));
+            st.shadow = Some((x, *d));
+        }
+        AnimatedTag::Be(n) => {
+            st.be_strength = *n;
+        }
+        AnimatedTag::Fax(f) => {
+            st.shear.0 = *f;
+        }
+        AnimatedTag::Fay(f) => {
+            st.shear.1 = *f;
+        }
+        AnimatedTag::IClipRect { x1, y1, x2, y2 } => {
+            let (lo_x, hi_x) = if x1 <= x2 { (*x1, *x2) } else { (*x2, *x1) };
+            let (lo_y, hi_y) = if y1 <= y2 { (*y1, *y2) } else { (*y2, *y1) };
+            st.iclip_rect = Some(ClipRect {
+                x1: lo_x,
+                y1: lo_y,
+                x2: hi_x,
+                y2: hi_y,
+            });
+        }
+        AnimatedTag::IClipDrawing(s) => {
+            st.iclip_drawing = Some(s.clone());
+        }
         AnimatedTag::T {
             t1_ms,
             t2_ms,
@@ -367,6 +489,24 @@ fn apply_t(
         let (fx, fy) = pre.translate.unwrap_or((px, py));
         st.translate = Some((lerp_f32(fx, px, k), lerp_f32(fy, py, k)));
     }
+    // Border / shadow / be / shear interpolation. \bord and \shad
+    // ramp linearly per axis; for \be the integer strength is
+    // round-clamped at each sample.
+    if let Some((px, py)) = post.border {
+        let (fx, fy) = pre.border.unwrap_or((px, py));
+        st.border = Some((lerp_f32(fx, px, k), lerp_f32(fy, py, k)));
+    }
+    if let Some((px, py)) = post.shadow {
+        let (fx, fy) = pre.shadow.unwrap_or((px, py));
+        st.shadow = Some((lerp_f32(fx, px, k), lerp_f32(fy, py, k)));
+    }
+    if post.be_strength != pre.be_strength {
+        let from = pre.be_strength as f32;
+        let to = post.be_strength as f32;
+        st.be_strength = lerp_f32(from, to, k).clamp(0.0, 255.0).round() as u8;
+    }
+    st.shear.0 = lerp_f32(pre.shear.0, post.shear.0, k);
+    st.shear.1 = lerp_f32(pre.shear.1, post.shear.1, k);
 }
 
 fn fad_alpha(t1: i32, t2: i32, t: i32, dur: i32) -> f32 {
@@ -627,18 +767,28 @@ fn parse_one(name_lc: &str, param: &str) -> Option<AnimatedTag> {
                 None
             }
         }
-        "blur" | "be" => {
-            // `\be(N)` is iterative box-blur in libass; we approximate
-            // both as Gaussian sigma. `\be` strength N is roughly
-            // sigma ≈ 0.6*sqrt(N) for the visual closeness; keep it
-            // simple at sigma = N for now.
-            param.trim().parse::<f32>().ok().map(AnimatedTag::Blur)
+        "blur" => param.trim().parse::<f32>().ok().map(AnimatedTag::Blur),
+        "be" => {
+            // `\be(N)` — iterative box-blur; the spec requires an
+            // integer strength. Accept floats from the wild and round.
+            let n = param.trim().parse::<f32>().ok()?;
+            let n = n.clamp(0.0, 255.0).round() as u8;
+            Some(AnimatedTag::Be(n))
         }
+        "bord" => param.trim().parse::<f32>().ok().map(AnimatedTag::Bord),
+        "xbord" => param.trim().parse::<f32>().ok().map(AnimatedTag::Xbord),
+        "ybord" => param.trim().parse::<f32>().ok().map(AnimatedTag::Ybord),
+        "shad" => param.trim().parse::<f32>().ok().map(AnimatedTag::Shad),
+        "xshad" => param.trim().parse::<f32>().ok().map(AnimatedTag::Xshad),
+        "yshad" => param.trim().parse::<f32>().ok().map(AnimatedTag::Yshad),
+        "fax" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fax),
+        "fay" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fay),
         "fscx" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fscx),
         "fscy" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fscy),
         "fs" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fs),
         "c" | "1c" => parse_color_rgb(param).map(AnimatedTag::Color1),
-        "clip" => parse_clip(param),
+        "clip" => parse_clip(param, false),
+        "iclip" => parse_clip(param, true),
         "t" => parse_t(param),
         _ => None,
     }
@@ -674,23 +824,37 @@ fn parse_color_rgb(s: &str) -> Option<(u8, u8, u8)> {
     Some((r, g, b))
 }
 
-fn parse_clip(param: &str) -> Option<AnimatedTag> {
+fn parse_clip(param: &str, inverse: bool) -> Option<AnimatedTag> {
     // `\clip(x1, y1, x2, y2)` rectangle (4 numeric args) or
-    // `\clip([scale,] drawing)` path.
+    // `\clip([scale,] drawing)` path. `\iclip(...)` is the inverse
+    // form: visible *outside* the rectangle / path.
     let parts: Vec<&str> = param.split(',').map(|s| s.trim()).collect();
     if parts.len() == 4 {
         let n: Vec<Option<f32>> = parts.iter().map(|p| p.parse::<f32>().ok()).collect();
         if n.iter().all(|x| x.is_some()) {
             let n: Vec<f32> = n.into_iter().map(|x| x.unwrap()).collect();
-            return Some(AnimatedTag::ClipRect {
-                x1: n[0],
-                y1: n[1],
-                x2: n[2],
-                y2: n[3],
+            return Some(if inverse {
+                AnimatedTag::IClipRect {
+                    x1: n[0],
+                    y1: n[1],
+                    x2: n[2],
+                    y2: n[3],
+                }
+            } else {
+                AnimatedTag::ClipRect {
+                    x1: n[0],
+                    y1: n[1],
+                    x2: n[2],
+                    y2: n[3],
+                }
             });
         }
     }
-    Some(AnimatedTag::ClipDrawing(param.to_string()))
+    Some(if inverse {
+        AnimatedTag::IClipDrawing(param.to_string())
+    } else {
+        AnimatedTag::ClipDrawing(param.to_string())
+    })
 }
 
 fn parse_t(param: &str) -> Option<AnimatedTag> {
@@ -1207,5 +1371,340 @@ mod tests {
         let p1 = st.transform.apply(oxideav_core::Point { x: 1.0, y: 0.0 });
         assert!((p1.x - 102.0).abs() < 1e-5);
         assert!((p1.y - 200.0).abs() < 1e-5);
+    }
+
+    // -----------------------------------------------------------------
+    // r76 typed tag coverage: \bord/\xbord/\ybord, \shad/\xshad/\yshad,
+    // \be (distinct from \blur), \fax/\fay, \iclip.
+
+    #[test]
+    fn parses_bord_uniform() {
+        let v = parse_block(r"\bord3.5");
+        assert_eq!(v, vec![AnimatedTag::Bord(3.5)]);
+    }
+
+    #[test]
+    fn parses_xbord_ybord_pair() {
+        let v = parse_block(r"\xbord2\ybord4");
+        assert_eq!(v, vec![AnimatedTag::Xbord(2.0), AnimatedTag::Ybord(4.0)]);
+    }
+
+    #[test]
+    fn parses_shad_uniform_and_per_axis() {
+        let v = parse_block(r"\shad5\xshad-2.5\yshad3");
+        assert_eq!(
+            v,
+            vec![
+                AnimatedTag::Shad(5.0),
+                AnimatedTag::Xshad(-2.5),
+                AnimatedTag::Yshad(3.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_blur_and_be_are_separate_variants() {
+        // Per Aegisub spec these are different filters; the old impl
+        // collapsed both into Blur, which lost \be vs \blur fidelity.
+        let v = parse_block(r"\blur2.5\be3");
+        assert_eq!(v.len(), 2);
+        assert!(matches!(v[0], AnimatedTag::Blur(b) if (b - 2.5).abs() < 1e-6));
+        assert!(matches!(v[1], AnimatedTag::Be(3)));
+    }
+
+    #[test]
+    fn be_rounds_non_integer_strengths() {
+        // Spec says integer; tolerate floats from the wild.
+        let v = parse_block(r"\be2.7");
+        assert!(matches!(v[0], AnimatedTag::Be(3)));
+    }
+
+    #[test]
+    fn parses_fax_fay() {
+        let v = parse_block(r"\fax0.5\fay-0.25");
+        assert_eq!(v, vec![AnimatedTag::Fax(0.5), AnimatedTag::Fay(-0.25)]);
+    }
+
+    #[test]
+    fn parses_iclip_rect() {
+        let v = parse_block(r"\iclip(10,20,100,200)");
+        assert_eq!(
+            v,
+            vec![AnimatedTag::IClipRect {
+                x1: 10.0,
+                y1: 20.0,
+                x2: 100.0,
+                y2: 200.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_iclip_drawing_passthrough() {
+        let v = parse_block(r"\iclip(m 0 0 l 100 0 l 100 100 l 0 100)");
+        assert_eq!(v.len(), 1);
+        assert!(matches!(v[0], AnimatedTag::IClipDrawing(_)));
+    }
+
+    #[test]
+    fn parses_iclip_with_scale_prefix_is_drawing_form() {
+        // `\iclip(scale, drawing)` — two-arg form is the scaled drawing
+        // variant, NOT a rect (rect requires exactly 4 numeric args).
+        let v = parse_block(r"\iclip(2,m 0 0 l 50 50)");
+        assert!(matches!(v[0], AnimatedTag::IClipDrawing(_)));
+    }
+
+    #[test]
+    fn evaluate_bord_sets_both_axes() {
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Bord(2.5)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.border, Some((2.5, 2.5)));
+    }
+
+    #[test]
+    fn evaluate_xbord_then_ybord_combines() {
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Xbord(2.0), AnimatedTag::Ybord(4.0)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.border, Some((2.0, 4.0)));
+    }
+
+    #[test]
+    fn evaluate_bord_after_xbord_ybord_overrides_both() {
+        // Spec: "if you use \bord after \xbord or \ybord on a line, it
+        // will [override them]".
+        let cue_anim = CueAnimation {
+            tags: vec![
+                AnimatedTag::Xbord(2.0),
+                AnimatedTag::Ybord(4.0),
+                AnimatedTag::Bord(1.0),
+            ],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.border, Some((1.0, 1.0)));
+    }
+
+    #[test]
+    fn evaluate_bord_clamps_negative_to_zero() {
+        // Spec: "Border width cannot be negative."
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Bord(-3.0)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.border, Some((0.0, 0.0)));
+    }
+
+    #[test]
+    fn evaluate_shad_uniform_and_xshad_yshad_negative() {
+        // \shad uniform must be non-negative per spec; \xshad/\yshad
+        // may be negative (shadow above/left of text).
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Shad(2.0)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.shadow, Some((2.0, 2.0)));
+
+        let cue_anim2 = CueAnimation {
+            tags: vec![AnimatedTag::Xshad(-3.5), AnimatedTag::Yshad(1.5)],
+        };
+        let st2 = cue_anim2.evaluate_at(0, 1000);
+        assert_eq!(st2.shadow, Some((-3.5, 1.5)));
+
+        // \shad must be clamped to >= 0 (spec).
+        let cue_anim3 = CueAnimation {
+            tags: vec![AnimatedTag::Shad(-2.0)],
+        };
+        let st3 = cue_anim3.evaluate_at(0, 1000);
+        assert_eq!(st3.shadow, Some((0.0, 0.0)));
+    }
+
+    #[test]
+    fn evaluate_be_strength() {
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Be(5)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.be_strength, 5);
+        // And \be does NOT touch blur_sigma (which is \blur).
+        assert_eq!(st.blur_sigma, 0.0);
+    }
+
+    #[test]
+    fn evaluate_fax_fay_writes_shear() {
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Fax(0.5), AnimatedTag::Fay(-0.3)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert!((st.shear.0 - 0.5).abs() < 1e-6);
+        assert!((st.shear.1 + 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn evaluate_iclip_rect_normalises() {
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::IClipRect {
+                x1: 100.0,
+                y1: 200.0,
+                x2: 10.0,
+                y2: 20.0,
+            }],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        let c = st.iclip_rect.unwrap();
+        assert_eq!((c.x1, c.y1, c.x2, c.y2), (10.0, 20.0, 100.0, 200.0));
+        // \iclip and \clip are mutually exclusive in the cue but
+        // independent fields on RenderState; only iclip_rect is set.
+        assert!(st.clip_rect.is_none());
+    }
+
+    #[test]
+    fn evaluate_iclip_drawing_stored() {
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::IClipDrawing("m 0 0 l 10 10".into())],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.iclip_drawing.as_deref(), Some("m 0 0 l 10 10"));
+        assert!(st.clip_drawing.is_none());
+    }
+
+    #[test]
+    fn t_interpolates_bord() {
+        // \bord(0) at t=0, ramps to \bord(4) at t=1000.
+        let cue_anim = CueAnimation {
+            tags: vec![
+                AnimatedTag::Bord(0.0),
+                AnimatedTag::T {
+                    t1_ms: Some(0),
+                    t2_ms: Some(1000),
+                    accel: 1.0,
+                    inner: vec![AnimatedTag::Bord(4.0)],
+                },
+            ],
+        };
+        let st_mid = cue_anim.evaluate_at(500, 1000);
+        let (bx, by) = st_mid.border.unwrap();
+        assert!((bx - 2.0).abs() < 1e-5, "bx = {}", bx);
+        assert!((by - 2.0).abs() < 1e-5);
+        let st_end = cue_anim.evaluate_at(1000, 1000);
+        let (bx2, by2) = st_end.border.unwrap();
+        assert!((bx2 - 4.0).abs() < 1e-5);
+        assert!((by2 - 4.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn t_interpolates_shad_per_axis() {
+        let cue_anim = CueAnimation {
+            tags: vec![
+                AnimatedTag::Xshad(0.0),
+                AnimatedTag::Yshad(0.0),
+                AnimatedTag::T {
+                    t1_ms: Some(0),
+                    t2_ms: Some(1000),
+                    accel: 1.0,
+                    inner: vec![AnimatedTag::Xshad(6.0), AnimatedTag::Yshad(-2.0)],
+                },
+            ],
+        };
+        let st = cue_anim.evaluate_at(500, 1000);
+        let (sx, sy) = st.shadow.unwrap();
+        assert!((sx - 3.0).abs() < 1e-5);
+        assert!((sy + 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn t_interpolates_fax_fay() {
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::T {
+                t1_ms: Some(0),
+                t2_ms: Some(1000),
+                accel: 1.0,
+                inner: vec![AnimatedTag::Fax(1.0)],
+            }],
+        };
+        let st = cue_anim.evaluate_at(500, 1000);
+        // Starting shear is (0, 0); halfway to (1, 0) → 0.5.
+        assert!((st.shear.0 - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn t_interpolates_be_rounds_to_integer() {
+        let cue_anim = CueAnimation {
+            tags: vec![
+                AnimatedTag::Be(0),
+                AnimatedTag::T {
+                    t1_ms: Some(0),
+                    t2_ms: Some(1000),
+                    accel: 1.0,
+                    inner: vec![AnimatedTag::Be(10)],
+                },
+            ],
+        };
+        let st = cue_anim.evaluate_at(500, 1000);
+        // Halfway: 5 (rounded).
+        assert_eq!(st.be_strength, 5);
+        let st_q = cue_anim.evaluate_at(250, 1000);
+        // Quarter: 2.5 → rounds to 3 (round-half-to-even per f32 round).
+        assert!(st_q.be_strength == 2 || st_q.be_strength == 3);
+    }
+
+    #[test]
+    fn extract_typed_tags_from_real_world_cue() {
+        // A composite cue that exercises every new typed tag in a single
+        // Dialogue line — representative of dense typesetting subs.
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 5_000_000,
+            style_ref: None,
+            positioning: None,
+            segments: vec![
+                Segment::Raw(
+                    r"{\bord2\xbord3\ybord4\shad1\xshad-2\yshad2\blur1.5\be2\fax0.1\fay-0.1\iclip(0,0,640,480)}"
+                        .into(),
+                ),
+                Segment::Text("text".into()),
+            ],
+        };
+        let anim = extract_cue_animation(&cue);
+        assert_eq!(anim.tags.len(), 11, "got {:?}", anim.tags);
+        let st = anim.evaluate_at(0, 5000);
+        // Border: \bord(2) then xbord=3,ybord=4 overrides → (3,4).
+        assert_eq!(st.border, Some((3.0, 4.0)));
+        // Shadow: \shad(1) then xshad=-2, yshad=2 → (-2, 2).
+        assert_eq!(st.shadow, Some((-2.0, 2.0)));
+        assert!((st.blur_sigma - 1.5).abs() < 1e-6);
+        assert_eq!(st.be_strength, 2);
+        assert!((st.shear.0 - 0.1).abs() < 1e-6);
+        assert!((st.shear.1 + 0.1).abs() < 1e-6);
+        let c = st.iclip_rect.unwrap();
+        assert_eq!((c.x1, c.y1, c.x2, c.y2), (0.0, 0.0, 640.0, 480.0));
+    }
+
+    #[test]
+    fn capital_k_karaoke_tag_is_recognised_as_kf() {
+        // Per Aegisub: "\K and \kf are identical". Our base parser
+        // lowercases tag names before matching, so \K already routes
+        // through the \k handler — this test pins that contract.
+        use crate::parse;
+        let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[V4+ Styles]\n\
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, Alignment, MarginL, MarginR, MarginV, Outline, Shadow\n\
+Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,2,10,10,10,1,0\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\K50}sweep{\\K30}done\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let segs = &t.cues[0].segments;
+        // Should contain two Karaoke segments (one per \K marker).
+        let karaoke_count = segs
+            .iter()
+            .filter(|s| matches!(s, Segment::Karaoke { .. }))
+            .count();
+        assert_eq!(karaoke_count, 2, "got segs = {:?}", segs);
     }
 }

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Typed extraction for nine more override tags from the Aegisub /
+  Kotus tag reference: `\bord` / `\xbord` / `\ybord` (uniform + per-
+  axis border widths, with the "later `\bord` overrides earlier
+  `\xbord`/`\ybord`" rule honoured), `\shad` / `\xshad` / `\yshad`
+  (uniform + per-axis shadow distances; `\shad` clamps non-negative
+  per spec while `\xshad`/`\yshad` may go negative for top/left
+  shadows), `\fax` / `\fay` (X/Y shearing factors applied after
+  rotation), and `\iclip(rect)` / `\iclip(drawing)` (inverse
+  rectangular / vector clip). `\be` (iterative box-blur, integer
+  strength) is now a distinct `AnimatedTag::Be` variant rather than
+  being silently folded into the Gaussian `\blur` channel — both
+  filters surface on `RenderState` as `be_strength: u8` and
+  `blur_sigma: f32` respectively so renderers can wire them to
+  separate passes. The new fields on `RenderState` (`border`,
+  `shadow`, `be_strength`, `shear`, `iclip_rect`, `iclip_drawing`)
+  default to "no override" so existing consumers continue to compile
+  unchanged. All new tags also interpolate correctly when wrapped in
+  `\t(...)`. The textual round-trip is unchanged — animated tags are
+  still preserved as `Segment::Raw` so encode-side output stays
+  bit-faithful.
+
 ### Fixed
 
 - Unknown sections (e.g. `[Aegisub Project Garbage]`, `[Aegisub
