@@ -64,7 +64,7 @@
 //!
 //! Times in `\fad`, `\move`, `\t` are milliseconds *from the cue
 //! start*. The ASS spec uses "ms from cue start" as the canonical
-//! reference, matching libass / Aegisub.
+//! reference for every animation tag.
 
 use oxideav_core::{Segment, SubtitleCue, Transform2D};
 
