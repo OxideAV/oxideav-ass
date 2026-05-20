@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed extraction for the per-component colour and alpha override-tag
+  families from the Aegisub tag reference: `\2c` / `\3c` / `\4c`
+  (secondary / outline / shadow fill colours) and `\alpha` plus
+  `\1a` / `\2a` / `\3a` / `\4a` (per-component alpha; ASS convention
+  0 = opaque, 255 = transparent, with `\alpha` setting all four
+  channels at once). New `AnimatedTag::Color2` / `Color3` / `Color4`
+  / `Alpha` / `Alpha1` / `Alpha2` / `Alpha3` / `Alpha4` variants
+  surface alongside the existing `Color1`. `RenderState` gains
+  `secondary_color` / `outline_color` / `shadow_color` (RGB,
+  `Option<(u8,u8,u8)>`) and `primary_alpha` / `secondary_alpha` /
+  `outline_alpha` / `shadow_alpha` (`Option<u8>`); the per-component
+  alphas are kept independent from `alpha_mul` (the `\fad` / `\fade`
+  cue-level envelope) so renderers compose
+  `final_alpha = component_alpha * alpha_mul` themselves. All eight
+  new tags interpolate correctly inside `\t(...)` per the Aegisub
+  spec's animatable-tag table (`\1c`..`\4c`, `\alpha`, `\1a`..`\4a`).
+  The textual round-trip path is unchanged — animated tags are still
+  preserved as `Segment::Raw` so encode-side output stays
+  bit-faithful.
 - Typed extraction for nine more override tags from the Aegisub /
   Kotus tag reference: `\bord` / `\xbord` / `\ybord` (uniform + per-
   axis border widths, with the "later `\bord` overrides earlier

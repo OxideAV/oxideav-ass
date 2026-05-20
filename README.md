@@ -102,25 +102,31 @@ What the parser understands and preserves on round-trip:
   `SubtitleCue` with start, end, style reference, and styled segments.
   `Comment:` events are dropped.
 - Override tags inside dialogue text — `\b`, `\i`, `\u`, `\s`, `\c`
-  and `\1c` (primary colour), `\fn`, `\fs`, `\pos(x,y)`, `\an`, `\k`
-  / `\kf` / `\ko` (karaoke timing markers), and `\r` (reset inline
-  state). Unknown tags survive parsing as opaque pass-through so
-  round-trip keeps them intact, even when mixed with tags the parser
-  does interpret.
+  and `\1c` (primary colour), `\2c` / `\3c` / `\4c` (secondary /
+  outline / shadow colour), `\alpha` and `\1a` / `\2a` / `\3a` /
+  `\4a` (per-component alpha — ASS convention: 0 = opaque, 255 =
+  transparent), `\fn`, `\fs`, `\pos(x,y)`, `\an`, `\k` / `\kf` /
+  `\ko` (karaoke timing markers), and `\r` (reset inline state).
+  Unknown tags survive parsing as opaque pass-through so round-trip
+  keeps them intact, even when mixed with tags the parser does
+  interpret.
 - **Animated tags** — `\fad(t1,t2)`, `\fade(7-arg)`, `\move(...)`,
   `\frz`, `\frx`, `\fry`, `\org(x,y)`, `\blur`, `\be`, `\bord`,
   `\xbord`, `\ybord`, `\shad`, `\xshad`, `\yshad`, `\fax`, `\fay`,
-  `\fscx` / `\fscy`, `\clip(rect)`, `\clip(drawing)`, `\iclip(rect)`,
-  `\iclip(drawing)`, and `\t(...)` wrapping any of the above. These
-  are exposed via the `animate` module: call
-  `oxideav_ass::extract_cue_animation(&cue)` to get a typed
-  `CueAnimation`, then `evaluate_at(t_ms, dur_ms)` to sample the
-  resulting `RenderState` (alpha multiplier, `Transform2D`, optional
-  clip + inverse-clip rect or drawing path, blur sigma, `\be` strength
-  separate from `\blur`, per-axis border + shadow widths, `(fax, fay)`
-  shear factors, current colour, pivot, per-axis rotations) at any
-  timestamp. The textual round-trip continues to emit the original
-  tags verbatim.
+  `\fscx` / `\fscy`, `\1c` / `\2c` / `\3c` / `\4c` (primary /
+  secondary / outline / shadow colour), `\alpha` and `\1a` / `\2a` /
+  `\3a` / `\4a` (per-component alpha), `\clip(rect)`,
+  `\clip(drawing)`, `\iclip(rect)`, `\iclip(drawing)`, and `\t(...)`
+  wrapping any of the above. These are exposed via the `animate`
+  module: call `oxideav_ass::extract_cue_animation(&cue)` to get a
+  typed `CueAnimation`, then `evaluate_at(t_ms, dur_ms)` to sample
+  the resulting `RenderState` (alpha multiplier, `Transform2D`,
+  optional clip + inverse-clip rect or drawing path, blur sigma,
+  `\be` strength separate from `\blur`, per-axis border + shadow
+  widths, `(fax, fay)` shear factors, primary / secondary / outline
+  / shadow colours, per-channel alphas independent of the `\fad`
+  envelope, pivot, per-axis rotations) at any timestamp. The textual
+  round-trip continues to emit the original tags verbatim.
 - **Drawing-mode parser** — the `\clip(drawing)` and `\p` mini
   language (`m`/`n`/`l`/`b`/`s`/`p`/`c`) is parsed via
   `oxideav_ass::parse_drawing(s, scale_exp)` into an

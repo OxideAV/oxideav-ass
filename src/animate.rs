@@ -35,6 +35,18 @@
 //!   place the shadow to the top or left of the text.
 //! * `\fax(f)` / `\fay(f)` — shear (perspective-distortion) factor on
 //!   the X / Y axis. Applied after rotation, on rotated coordinates.
+//! * `\2c(&Hbbggrr&)` / `\3c(&Hbbggrr&)` / `\4c(&Hbbggrr&)` —
+//!   secondary fill, border, and shadow colours. `\1c` (alias `\c`) is
+//!   already in this set; the four together cover the four colour
+//!   components an ASS glyph carries.
+//! * `\alpha(&Haa&)` / `\1a(&Haa&)` / `\2a(&Haa&)` / `\3a(&Haa&)` /
+//!   `\4a(&Haa&)` — per-component alpha overrides. ASS uses 0 = opaque,
+//!   255 = transparent; renderers translate to their own opacity
+//!   convention. `\alpha` sets all four channels at once; `\1a` /
+//!   `\2a` / `\3a` / `\4a` set the primary / secondary / border /
+//!   shadow alpha individually. These per-component alphas are
+//!   independent of the cue-level `\fad` / `\fade` envelope (which
+//!   keeps multiplying [`RenderState::alpha_mul`]).
 //! * `\clip(x1, y1, x2, y2)` — restrict rendering to the rectangle
 //!   `[x1..x2] x [y1..y2]`. The drawing-path form is recognised but
 //!   stored verbatim (round 2).
@@ -44,10 +56,11 @@
 //! * `\fscx(percent)` / `\fscy(percent)` — non-uniform scale.
 //! * `\t(t1, t2, [accel,] tags)` — interpolate the inner tags over
 //!   `[t1, t2]` within the cue. Inner tags supported in this round:
-//!   `\fscx`, `\fscy`, `\frz`, `\c` / `\1c`, `\fs`, `\blur`, `\bord`,
-//!   `\xbord`, `\ybord`, `\shad`, `\xshad`, `\yshad`, `\fax`, `\fay`.
-//!   Other inner tags are stored verbatim and applied as a static
-//!   override for `t >= t1`.
+//!   `\fscx`, `\fscy`, `\frz`, `\c` / `\1c` / `\2c` / `\3c` / `\4c`,
+//!   `\alpha` / `\1a` / `\2a` / `\3a` / `\4a`, `\fs`, `\blur`,
+//!   `\bord`, `\xbord`, `\ybord`, `\shad`, `\xshad`, `\yshad`, `\fax`,
+//!   `\fay`. Other inner tags are stored verbatim and applied as a
+//!   static override for `t >= t1`.
 //!
 //! Times in `\fad`, `\move`, `\t` are milliseconds *from the cue
 //! start*. The ASS spec uses "ms from cue start" as the canonical
@@ -139,6 +152,24 @@ pub enum AnimatedTag {
     /// verbatim. Parse with [`crate::drawing::parse_drawing`] if a
     /// path is needed.
     IClipDrawing(String),
+    /// `\2c&Hbbggrr&` — secondary fill colour (RGB).
+    Color2((u8, u8, u8)),
+    /// `\3c&Hbbggrr&` — border / outline colour (RGB).
+    Color3((u8, u8, u8)),
+    /// `\4c&Hbbggrr&` — shadow colour (RGB).
+    Color4((u8, u8, u8)),
+    /// `\alpha&Haa&` — sets the alpha of all four colour components at
+    /// once (primary / secondary / border / shadow). ASS convention:
+    /// 0 = opaque, 255 = transparent.
+    Alpha(u8),
+    /// `\1a&Haa&` — primary fill alpha. ASS convention.
+    Alpha1(u8),
+    /// `\2a&Haa&` — secondary fill alpha (pre-highlight karaoke).
+    Alpha2(u8),
+    /// `\3a&Haa&` — border alpha.
+    Alpha3(u8),
+    /// `\4a&Haa&` — shadow alpha.
+    Alpha4(u8),
     /// `\t([t1,t2,[accel,]] inner_tags)` — interpolate the inner tags
     /// over `[t1, t2]`. When `t1`/`t2` are omitted ASS treats them as
     /// `[0, cue_duration]`. `accel` defaults to 1.0 (linear).
@@ -224,6 +255,24 @@ pub struct RenderState {
     /// `\iclip(drawing)` raw drawing string; renderer parses to a
     /// path and masks against its inverse.
     pub iclip_drawing: Option<String>,
+    /// `\2c` secondary fill colour override, if active.
+    pub secondary_color: Option<(u8, u8, u8)>,
+    /// `\3c` border / outline colour override, if active.
+    pub outline_color: Option<(u8, u8, u8)>,
+    /// `\4c` shadow colour override, if active.
+    pub shadow_color: Option<(u8, u8, u8)>,
+    /// `\1a` primary fill alpha (0 = opaque, 255 = transparent), if
+    /// set. `None` means "fall back to style alpha". Independent of
+    /// [`Self::alpha_mul`], which is the `\fad` / `\fade` cue-level
+    /// envelope. Renderers compose:
+    /// `final_primary_alpha = primary_alpha.unwrap_or(style) * alpha_mul`.
+    pub primary_alpha: Option<u8>,
+    /// `\2a` secondary fill alpha, if set.
+    pub secondary_alpha: Option<u8>,
+    /// `\3a` border / outline alpha, if set.
+    pub outline_alpha: Option<u8>,
+    /// `\4a` shadow alpha, if set.
+    pub shadow_alpha: Option<u8>,
 }
 
 impl RenderState {
@@ -249,6 +298,13 @@ impl RenderState {
             shear: (0.0, 0.0),
             iclip_rect: None,
             iclip_drawing: None,
+            secondary_color: None,
+            outline_color: None,
+            shadow_color: None,
+            primary_alpha: None,
+            secondary_alpha: None,
+            outline_alpha: None,
+            shadow_alpha: None,
         }
     }
 }
@@ -421,6 +477,34 @@ fn apply_tag(st: &mut RenderState, tag: &AnimatedTag, t_ms: i32, dur_ms: i32) {
         AnimatedTag::IClipDrawing(s) => {
             st.iclip_drawing = Some(s.clone());
         }
+        AnimatedTag::Color2(rgb) => {
+            st.secondary_color = Some(*rgb);
+        }
+        AnimatedTag::Color3(rgb) => {
+            st.outline_color = Some(*rgb);
+        }
+        AnimatedTag::Color4(rgb) => {
+            st.shadow_color = Some(*rgb);
+        }
+        AnimatedTag::Alpha(a) => {
+            // \alpha sets all four channels at once.
+            st.primary_alpha = Some(*a);
+            st.secondary_alpha = Some(*a);
+            st.outline_alpha = Some(*a);
+            st.shadow_alpha = Some(*a);
+        }
+        AnimatedTag::Alpha1(a) => {
+            st.primary_alpha = Some(*a);
+        }
+        AnimatedTag::Alpha2(a) => {
+            st.secondary_alpha = Some(*a);
+        }
+        AnimatedTag::Alpha3(a) => {
+            st.outline_alpha = Some(*a);
+        }
+        AnimatedTag::Alpha4(a) => {
+            st.shadow_alpha = Some(*a);
+        }
         AnimatedTag::T {
             t1_ms,
             t2_ms,
@@ -507,6 +591,41 @@ fn apply_t(
     }
     st.shear.0 = lerp_f32(pre.shear.0, post.shear.0, k);
     st.shear.1 = lerp_f32(pre.shear.1, post.shear.1, k);
+    // Per-component colours \2c / \3c / \4c interpolate just like \1c.
+    if let Some(c) = post.secondary_color {
+        let from = pre.secondary_color.unwrap_or(c);
+        st.secondary_color = Some(lerp_rgb(from, c, k));
+    }
+    if let Some(c) = post.outline_color {
+        let from = pre.outline_color.unwrap_or(c);
+        st.outline_color = Some(lerp_rgb(from, c, k));
+    }
+    if let Some(c) = post.shadow_color {
+        let from = pre.shadow_color.unwrap_or(c);
+        st.shadow_color = Some(lerp_rgb(from, c, k));
+    }
+    // Per-component alphas \1a..\4a interpolate as u8 linearly.
+    if let Some(a) = post.primary_alpha {
+        let from = pre.primary_alpha.unwrap_or(a);
+        st.primary_alpha = Some(lerp_u8(from, a, k));
+    }
+    if let Some(a) = post.secondary_alpha {
+        let from = pre.secondary_alpha.unwrap_or(a);
+        st.secondary_alpha = Some(lerp_u8(from, a, k));
+    }
+    if let Some(a) = post.outline_alpha {
+        let from = pre.outline_alpha.unwrap_or(a);
+        st.outline_alpha = Some(lerp_u8(from, a, k));
+    }
+    if let Some(a) = post.shadow_alpha {
+        let from = pre.shadow_alpha.unwrap_or(a);
+        st.shadow_alpha = Some(lerp_u8(from, a, k));
+    }
+}
+
+fn lerp_u8(a: u8, b: u8, k: f32) -> u8 {
+    let v = a as f32 + (b as f32 - a as f32) * k;
+    v.clamp(0.0, 255.0).round() as u8
 }
 
 fn fad_alpha(t1: i32, t2: i32, t: i32, dur: i32) -> f32 {
@@ -787,11 +906,39 @@ fn parse_one(name_lc: &str, param: &str) -> Option<AnimatedTag> {
         "fscy" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fscy),
         "fs" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fs),
         "c" | "1c" => parse_color_rgb(param).map(AnimatedTag::Color1),
+        "2c" => parse_color_rgb(param).map(AnimatedTag::Color2),
+        "3c" => parse_color_rgb(param).map(AnimatedTag::Color3),
+        "4c" => parse_color_rgb(param).map(AnimatedTag::Color4),
+        "alpha" => parse_alpha_byte(param).map(AnimatedTag::Alpha),
+        "1a" => parse_alpha_byte(param).map(AnimatedTag::Alpha1),
+        "2a" => parse_alpha_byte(param).map(AnimatedTag::Alpha2),
+        "3a" => parse_alpha_byte(param).map(AnimatedTag::Alpha3),
+        "4a" => parse_alpha_byte(param).map(AnimatedTag::Alpha4),
         "clip" => parse_clip(param, false),
         "iclip" => parse_clip(param, true),
         "t" => parse_t(param),
         _ => None,
     }
+}
+
+/// Parse an ASS alpha byte: `&HFF&` (preferred), `&HFF`, `H80`, `0xFF`,
+/// or a bare hex string. Returns `0..=255`.
+///
+/// ASS only ever specifies alpha as hexadecimal (per Aegisub spec:
+/// "in <a href='hexadecimal'>hexadecimal</a> ... `\1a&HFF&`"). Any
+/// `&H` / `H` / `0x` prefix and `&` envelope are tolerated; the
+/// underlying value is always parsed base-16.
+fn parse_alpha_byte(s: &str) -> Option<u8> {
+    let mut t = s.trim();
+    t = t.trim_matches('&');
+    t = t.trim_start_matches(['H', 'h']);
+    t = t.trim_start_matches("0x");
+    t = t.trim_matches('&').trim();
+    if t.is_empty() {
+        return None;
+    }
+    let v = u32::from_str_radix(t, 16).ok()?;
+    Some(v.clamp(0, 255) as u8)
 }
 
 fn parse_int_list(s: &str) -> Vec<i32> {
@@ -1680,6 +1827,212 @@ mod tests {
         assert!((st.shear.1 + 0.1).abs() < 1e-6);
         let c = st.iclip_rect.unwrap();
         assert_eq!((c.x1, c.y1, c.x2, c.y2), (0.0, 0.0, 640.0, 480.0));
+    }
+
+    // -----------------------------------------------------------------
+    // r81 typed tag coverage: \2c / \3c / \4c per-component colours +
+    // \alpha + \1a..\4a per-component alphas.
+
+    #[test]
+    fn parses_color2_color3_color4() {
+        let v = parse_block(r"\2c&H0000FF&\3c&H00FF00&\4c&HFF0000&");
+        assert_eq!(
+            v,
+            vec![
+                AnimatedTag::Color2((255, 0, 0)),
+                AnimatedTag::Color3((0, 255, 0)),
+                AnimatedTag::Color4((0, 0, 255)),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_alpha_all_and_per_component() {
+        let v = parse_block(r"\alpha&H80&\1a&HFF&\2a&H00&\3a&H40&\4a&HC0&");
+        assert_eq!(
+            v,
+            vec![
+                AnimatedTag::Alpha(0x80),
+                AnimatedTag::Alpha1(0xFF),
+                AnimatedTag::Alpha2(0x00),
+                AnimatedTag::Alpha3(0x40),
+                AnimatedTag::Alpha4(0xC0),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_alpha_tolerates_envelope_variants() {
+        // All four shapes the wild emits should parse identically.
+        assert_eq!(parse_alpha_byte("&HFF&"), Some(0xFF));
+        assert_eq!(parse_alpha_byte("&HFF"), Some(0xFF));
+        assert_eq!(parse_alpha_byte("HFF"), Some(0xFF));
+        assert_eq!(parse_alpha_byte("0xFF"), Some(0xFF));
+        assert_eq!(parse_alpha_byte("ff"), Some(0xFF));
+        assert_eq!(parse_alpha_byte(""), None);
+    }
+
+    #[test]
+    fn evaluate_color2_color3_color4_writes_separate_fields() {
+        let cue_anim = CueAnimation {
+            tags: vec![
+                AnimatedTag::Color2((10, 20, 30)),
+                AnimatedTag::Color3((40, 50, 60)),
+                AnimatedTag::Color4((70, 80, 90)),
+            ],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.secondary_color, Some((10, 20, 30)));
+        assert_eq!(st.outline_color, Some((40, 50, 60)));
+        assert_eq!(st.shadow_color, Some((70, 80, 90)));
+        // \2c / \3c / \4c must not pollute \1c.
+        assert_eq!(st.primary_color, None);
+    }
+
+    #[test]
+    fn evaluate_alpha_global_sets_all_four_channels() {
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Alpha(0x80)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.primary_alpha, Some(0x80));
+        assert_eq!(st.secondary_alpha, Some(0x80));
+        assert_eq!(st.outline_alpha, Some(0x80));
+        assert_eq!(st.shadow_alpha, Some(0x80));
+    }
+
+    #[test]
+    fn evaluate_per_component_alpha_overrides_global() {
+        // \alpha sets all four, then \3a&HFF& makes border transparent.
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Alpha(0x40), AnimatedTag::Alpha3(0xFF)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.primary_alpha, Some(0x40));
+        assert_eq!(st.secondary_alpha, Some(0x40));
+        assert_eq!(st.outline_alpha, Some(0xFF));
+        assert_eq!(st.shadow_alpha, Some(0x40));
+    }
+
+    #[test]
+    fn alpha_per_component_does_not_touch_alpha_mul() {
+        // \fad alpha_mul is the cue-level envelope; per-component
+        // alphas (\1a..\4a) are independent overrides on top.
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Alpha1(0x80), AnimatedTag::Alpha3(0xC0)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.alpha_mul, 1.0);
+        assert_eq!(st.primary_alpha, Some(0x80));
+        assert_eq!(st.outline_alpha, Some(0xC0));
+    }
+
+    #[test]
+    fn t_interpolates_color3() {
+        // Border colour interpolation: red → blue over [0, 1000].
+        let cue_anim = CueAnimation {
+            tags: vec![
+                AnimatedTag::Color3((255, 0, 0)),
+                AnimatedTag::T {
+                    t1_ms: Some(0),
+                    t2_ms: Some(1000),
+                    accel: 1.0,
+                    inner: vec![AnimatedTag::Color3((0, 0, 255))],
+                },
+            ],
+        };
+        let st = cue_anim.evaluate_at(500, 1000);
+        let rgb = st.outline_color.unwrap();
+        assert!((rgb.0 as i32 - 127).abs() <= 1);
+        assert_eq!(rgb.1, 0);
+        assert!((rgb.2 as i32 - 127).abs() <= 1);
+    }
+
+    #[test]
+    fn t_interpolates_alpha1() {
+        // Primary alpha 0x00 → 0xFF over [0, 1000]. At t=500 ≈ 0x80.
+        let cue_anim = CueAnimation {
+            tags: vec![
+                AnimatedTag::Alpha1(0x00),
+                AnimatedTag::T {
+                    t1_ms: Some(0),
+                    t2_ms: Some(1000),
+                    accel: 1.0,
+                    inner: vec![AnimatedTag::Alpha1(0xFF)],
+                },
+            ],
+        };
+        let st = cue_anim.evaluate_at(500, 1000);
+        let a = st.primary_alpha.unwrap();
+        assert!((a as i32 - 0x80).abs() <= 1, "got {:#x}", a);
+        // Endpoint sanity.
+        let st_end = cue_anim.evaluate_at(1000, 1000);
+        assert_eq!(st_end.primary_alpha, Some(0xFF));
+    }
+
+    #[test]
+    fn t_interpolates_alpha_global_writes_all_four() {
+        // \alpha:&H00& → &HFF& halfway gives 0x80 on every channel.
+        let cue_anim = CueAnimation {
+            tags: vec![
+                AnimatedTag::Alpha(0x00),
+                AnimatedTag::T {
+                    t1_ms: Some(0),
+                    t2_ms: Some(1000),
+                    accel: 1.0,
+                    inner: vec![AnimatedTag::Alpha(0xFF)],
+                },
+            ],
+        };
+        let st = cue_anim.evaluate_at(500, 1000);
+        for ch in [
+            st.primary_alpha,
+            st.secondary_alpha,
+            st.outline_alpha,
+            st.shadow_alpha,
+        ] {
+            let a = ch.unwrap();
+            assert!((a as i32 - 0x80).abs() <= 1);
+        }
+    }
+
+    #[test]
+    fn extract_full_alpha_and_color_cue() {
+        // Composite real-world cue: per-axis colours + per-channel
+        // alphas all in a single override block.
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 2_000_000,
+            style_ref: None,
+            positioning: None,
+            segments: vec![
+                Segment::Raw(
+                    r"{\1c&H0000FF&\2c&H00FF00&\3c&HFF0000&\4c&H808080&\alpha&H80&\3a&HFF&}".into(),
+                ),
+                Segment::Text("text".into()),
+            ],
+        };
+        let anim = extract_cue_animation(&cue);
+        assert_eq!(anim.tags.len(), 6, "got {:?}", anim.tags);
+        let st = anim.evaluate_at(0, 2000);
+        assert_eq!(st.primary_color, Some((255, 0, 0)));
+        assert_eq!(st.secondary_color, Some((0, 255, 0)));
+        assert_eq!(st.outline_color, Some((0, 0, 255)));
+        assert_eq!(st.shadow_color, Some((128, 128, 128)));
+        // \alpha 0x80 → all four channels 0x80, then \3a&HFF& overrides
+        // the border channel only.
+        assert_eq!(st.primary_alpha, Some(0x80));
+        assert_eq!(st.secondary_alpha, Some(0x80));
+        assert_eq!(st.outline_alpha, Some(0xFF));
+        assert_eq!(st.shadow_alpha, Some(0x80));
+    }
+
+    #[test]
+    fn unrecognised_color_or_alpha_payload_is_skipped() {
+        // Empty payload or junk yields no AnimatedTag (parser drops it).
+        assert!(parse_block(r"\2c&Hgggggg&").is_empty());
+        assert!(parse_block(r"\1a").is_empty());
+        assert!(parse_block(r"\3c").is_empty());
     }
 
     #[test]
