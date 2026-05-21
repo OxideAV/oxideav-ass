@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed extraction for two more override tags from the Aegisub /
+  TCAX spec: `\fsp(spacing)` (additive letter-spacing in script-
+  resolution pixels — may be negative or decimal, fully animatable
+  per the `\t(...)` interpolation table) and `\q(mode)` (line-level
+  wrap-style override `0`/`1`/`2`/`3`; static, not animatable per
+  spec — out-of-range modes are dropped so the renderer keeps the
+  script's `WrapStyle` header). New `AnimatedTag::Fsp(f32)` and
+  `AnimatedTag::Q(u8)` variants. `RenderState` gains
+  `letter_spacing: Option<f32>` and `wrap_style: Option<u8>`, both
+  defaulting to `None` (= fall back to the style's `Spacing` field
+  and the script header's `WrapStyle`). `\fsp` interpolates linearly
+  when nested inside `\t(...)`; `\q` snaps to the post-state value at
+  `t > t1` because the spec treats it as non-animatable. The textual
+  round-trip path is unchanged — animated tags are still preserved
+  as `Segment::Raw` so encode-side output stays bit-faithful.
 - Typed extraction for the per-component colour and alpha override-tag
   families from the Aegisub tag reference: `\2c` / `\3c` / `\4c`
   (secondary / outline / shadow fill colours) and `\alpha` plus

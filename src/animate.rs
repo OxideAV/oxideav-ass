@@ -35,6 +35,13 @@
 //!   place the shadow to the top or left of the text.
 //! * `\fax(f)` / `\fay(f)` — shear (perspective-distortion) factor on
 //!   the X / Y axis. Applied after rotation, on rotated coordinates.
+//! * `\fsp(spacing)` — letter-spacing in script-resolution pixels.
+//!   Spacing may be negative or decimal; default `0` (no additional
+//!   advance between letters). Animatable per the Aegisub / TCAX
+//!   spec.
+//! * `\q(style)` — wrap style override for the line. `0`/`1`/`2`/`3`
+//!   map to the SSA spec wrap modes (smart-top / EOL / no-wrap /
+//!   smart-bottom). Static, not animatable.
 //! * `\2c(&Hbbggrr&)` / `\3c(&Hbbggrr&)` / `\4c(&Hbbggrr&)` —
 //!   secondary fill, border, and shadow colours. `\1c` (alias `\c`) is
 //!   already in this set; the four together cover the four colour
@@ -59,8 +66,10 @@
 //!   `\fscx`, `\fscy`, `\frz`, `\c` / `\1c` / `\2c` / `\3c` / `\4c`,
 //!   `\alpha` / `\1a` / `\2a` / `\3a` / `\4a`, `\fs`, `\blur`,
 //!   `\bord`, `\xbord`, `\ybord`, `\shad`, `\xshad`, `\yshad`, `\fax`,
-//!   `\fay`. Other inner tags are stored verbatim and applied as a
-//!   static override for `t >= t1`.
+//!   `\fay`, `\fsp`. Other inner tags are stored verbatim and applied
+//!   as a static override for `t >= t1`. `\q` is a static (non-
+//!   animated) line-level setting per spec; it is parsed at the cue
+//!   level and ignored inside `\t(...)`.
 //!
 //! Times in `\fad`, `\move`, `\t` are milliseconds *from the cue
 //! start*. The ASS spec uses "ms from cue start" as the canonical
@@ -170,6 +179,15 @@ pub enum AnimatedTag {
     Alpha3(u8),
     /// `\4a&Haa&` — shadow alpha.
     Alpha4(u8),
+    /// `\fsp(spacing)` — additional advance between letters in
+    /// script-resolution pixels. May be negative or decimal; default
+    /// `0`. Animatable.
+    Fsp(f32),
+    /// `\q(style)` — wrap style for the line. Values per SSA spec:
+    /// `0` = smart wrap balanced top-wider, `1` = end-of-line wrap,
+    /// `2` = no wrapping, `3` = smart wrap balanced bottom-wider.
+    /// Static (not animatable).
+    Q(u8),
     /// `\t([t1,t2,[accel,]] inner_tags)` — interpolate the inner tags
     /// over `[t1, t2]`. When `t1`/`t2` are omitted ASS treats them as
     /// `[0, cue_duration]`. `accel` defaults to 1.0 (linear).
@@ -273,6 +291,15 @@ pub struct RenderState {
     pub outline_alpha: Option<u8>,
     /// `\4a` shadow alpha, if set.
     pub shadow_alpha: Option<u8>,
+    /// `\fsp` additional letter-spacing in script-resolution pixels,
+    /// if set. `None` = use the style's `Spacing` field. May be
+    /// negative or decimal.
+    pub letter_spacing: Option<f32>,
+    /// `\q` wrap-style override for the line, if set. `None` = use
+    /// the script's `WrapStyle` header. Values per SSA spec:
+    /// `0` smart-top / `1` EOL / `2` no-wrap / `3` smart-bottom.
+    /// Not animatable per spec.
+    pub wrap_style: Option<u8>,
 }
 
 impl RenderState {
@@ -305,6 +332,8 @@ impl RenderState {
             secondary_alpha: None,
             outline_alpha: None,
             shadow_alpha: None,
+            letter_spacing: None,
+            wrap_style: None,
         }
     }
 }
@@ -505,6 +534,16 @@ fn apply_tag(st: &mut RenderState, tag: &AnimatedTag, t_ms: i32, dur_ms: i32) {
         AnimatedTag::Alpha4(a) => {
             st.shadow_alpha = Some(*a);
         }
+        AnimatedTag::Fsp(s) => {
+            st.letter_spacing = Some(*s);
+        }
+        AnimatedTag::Q(mode) => {
+            // Clamp to the four spec values; out-of-range modes fall
+            // back to the script header's WrapStyle (no override).
+            if *mode <= 3 {
+                st.wrap_style = Some(*mode);
+            }
+        }
         AnimatedTag::T {
             t1_ms,
             t2_ms,
@@ -620,6 +659,21 @@ fn apply_t(
     if let Some(a) = post.shadow_alpha {
         let from = pre.shadow_alpha.unwrap_or(a);
         st.shadow_alpha = Some(lerp_u8(from, a, k));
+    }
+    // \fsp ramps linearly per spec; falls back to pre when post has no
+    // override.
+    if let Some(s) = post.letter_spacing {
+        let from = pre.letter_spacing.unwrap_or(s);
+        st.letter_spacing = Some(lerp_f32(from, s, k));
+    }
+    // \q is non-animatable: snap to the post-state value at t >= t1
+    // (k > 0), keep pre below.
+    if post.wrap_style != pre.wrap_style {
+        st.wrap_style = if k > 0.0 {
+            post.wrap_style
+        } else {
+            pre.wrap_style
+        };
     }
 }
 
@@ -905,6 +959,18 @@ fn parse_one(name_lc: &str, param: &str) -> Option<AnimatedTag> {
         "fscx" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fscx),
         "fscy" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fscy),
         "fs" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fs),
+        "fsp" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fsp),
+        "q" => {
+            // `\q<mode>` — 0/1/2/3 per spec. Values outside that
+            // range are skipped (the renderer falls back to the
+            // script's WrapStyle header).
+            let n: i32 = param.trim().parse().ok()?;
+            if (0..=3).contains(&n) {
+                Some(AnimatedTag::Q(n as u8))
+            } else {
+                None
+            }
+        }
         "c" | "1c" => parse_color_rgb(param).map(AnimatedTag::Color1),
         "2c" => parse_color_rgb(param).map(AnimatedTag::Color2),
         "3c" => parse_color_rgb(param).map(AnimatedTag::Color3),
@@ -2059,5 +2125,112 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\K50}sweep{\\K30}done\n";
             .filter(|s| matches!(s, Segment::Karaoke { .. }))
             .count();
         assert_eq!(karaoke_count, 2, "got segs = {:?}", segs);
+    }
+
+    // ---------------------------------------------------------------
+    // \fsp letter-spacing + \q wrap-style coverage (round 88).
+
+    #[test]
+    fn parses_fsp_static() {
+        let v = parse_block(r"\fsp3");
+        assert_eq!(v, vec![AnimatedTag::Fsp(3.0)]);
+        // Negative + decimal both accepted per Aegisub spec.
+        let v = parse_block(r"\fsp-1.5");
+        assert_eq!(v, vec![AnimatedTag::Fsp(-1.5)]);
+    }
+
+    #[test]
+    fn parses_q_in_range() {
+        for mode in 0..=3 {
+            let src = format!(r"\q{mode}");
+            let v = parse_block(&src);
+            assert_eq!(v, vec![AnimatedTag::Q(mode as u8)]);
+        }
+    }
+
+    #[test]
+    fn parses_q_out_of_range_dropped() {
+        // SSA only defines wrap modes 0..=3; anything else is ignored
+        // so the renderer keeps using the script header's WrapStyle.
+        assert!(parse_block(r"\q4").is_empty());
+        assert!(parse_block(r"\q-1").is_empty());
+    }
+
+    #[test]
+    fn evaluate_fsp_static_override() {
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Fsp(2.5)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.letter_spacing, Some(2.5));
+        // Default state has no override.
+        assert!(RenderState::identity().letter_spacing.is_none());
+    }
+
+    #[test]
+    fn evaluate_q_static_override() {
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Q(2)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.wrap_style, Some(2));
+        assert!(RenderState::identity().wrap_style.is_none());
+    }
+
+    #[test]
+    fn fsp_animatable_via_t() {
+        // \t(0,1000,\fsp4) — letter-spacing should ramp 0 → 4 over
+        // the cue. Without a pre-state \fsp, the source defaults to
+        // the post-state value (no interpolation source), matching how
+        // \blur etc. behave today.
+        let v = parse_block(r"\fsp0\t(0,1000,\fsp4)");
+        assert_eq!(v.len(), 2);
+        let cue_anim = CueAnimation { tags: v };
+        let st0 = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st0.letter_spacing, Some(0.0));
+        let st_mid = cue_anim.evaluate_at(500, 1000);
+        let mid = st_mid.letter_spacing.expect("set");
+        assert!(
+            (mid - 2.0).abs() < 1e-3,
+            "expected 2.0 at midpoint, got {mid}"
+        );
+        let st_end = cue_anim.evaluate_at(1000, 1000);
+        assert_eq!(st_end.letter_spacing, Some(4.0));
+    }
+
+    #[test]
+    fn q_static_inside_t_snaps_post() {
+        // \q is not animatable; if the spec value appears inside \t
+        // it should snap to the post value once t1 has elapsed.
+        let v = parse_block(r"\q0\t(500,1000,\q2)");
+        assert_eq!(v.len(), 2);
+        let cue_anim = CueAnimation { tags: v };
+        // Before the transition starts: pre-value.
+        let st_before = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st_before.wrap_style, Some(0));
+        // Once t > t1 (k > 0): post-value.
+        let st_mid = cue_anim.evaluate_at(750, 1000);
+        assert_eq!(st_mid.wrap_style, Some(2));
+        let st_end = cue_anim.evaluate_at(1000, 1000);
+        assert_eq!(st_end.wrap_style, Some(2));
+    }
+
+    #[test]
+    fn extract_fsp_q_from_cue_segment() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            positioning: None,
+            segments: vec![
+                Segment::Raw(r"{\fsp2\q1}".into()),
+                Segment::Text("spaced".into()),
+            ],
+        };
+        let anim = extract_cue_animation(&cue);
+        assert_eq!(anim.tags.len(), 2);
+        let st = anim.evaluate_at(0, 1000);
+        assert_eq!(st.letter_spacing, Some(2.0));
+        assert_eq!(st.wrap_style, Some(1));
     }
 }
