@@ -951,8 +951,8 @@ fn parse_one(name_lc: &str, param: &str) -> Option<AnimatedTag> {
         "fry" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fry),
         "pos" => {
             // `\pos(x, y)` — static line position. The spec requires
-            // integer coordinates, but VSFilter/libass tolerate decimals
-            // in the wild, so parse as floats like \move / \org do.
+            // integer coordinates, but decimal values appear in the
+            // wild, so parse as floats like \move / \org do.
             let n = parse_float_list(param);
             if n.len() == 2 {
                 Some(AnimatedTag::Pos { x: n[0], y: n[1] })
