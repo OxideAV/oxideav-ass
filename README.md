@@ -120,18 +120,19 @@ What the parser understands and preserves on round-trip:
   colour), `\alpha` and `\1a` / `\2a` / `\3a` / `\4a` (per-component
   alpha), `\clip(rect)`, `\clip(drawing)`, `\iclip(rect)`,
   `\iclip(drawing)`, `\q` (line wrap-style override; static per spec),
-  and `\t(...)` wrapping any of the animatable ones. These are
-  exposed via the `animate` module: call
-  `oxideav_ass::extract_cue_animation(&cue)` to get a typed
+  `\an<1..=9>` (numpad alignment) plus the legacy `\a<pos>` form
+  (converted to the same numpad surface), and `\t(...)` wrapping any
+  of the animatable ones. These are exposed via the `animate` module:
+  call `oxideav_ass::extract_cue_animation(&cue)` to get a typed
   `CueAnimation`, then `evaluate_at(t_ms, dur_ms)` to sample the
   resulting `RenderState` (alpha multiplier, `Transform2D`, optional
   clip + inverse-clip rect or drawing path, blur sigma, `\be`
   strength separate from `\blur`, per-axis border + shadow widths,
   `(fax, fay)` shear factors, additive letter spacing, line wrap
-  style, primary / secondary / outline / shadow colours, per-channel
-  alphas independent of the `\fad` envelope, pivot, per-axis
-  rotations) at any timestamp. The textual round-trip continues to
-  emit the original tags verbatim.
+  style, line alignment as a numpad code, primary / secondary /
+  outline / shadow colours, per-channel alphas independent of the
+  `\fad` envelope, pivot, per-axis rotations) at any timestamp. The
+  textual round-trip continues to emit the original tags verbatim.
 - **Drawing-mode parser** — the `\clip(drawing)` and `\p` mini
   language (`m`/`n`/`l`/`b`/`s`/`p`/`c`) is parsed via
   `oxideav_ass::parse_drawing(s, scale_exp)` into an

@@ -587,10 +587,30 @@ fn handle_overrides(
                 }
             }
             "an" => {
+                // Set cue-level horizontal alignment so the typed
+                // CuePosition path stays in sync, but also fall
+                // through to the passthrough so the animate module
+                // can surface the full 1..=9 numpad value on
+                // RenderState::alignment (the cp.align field only
+                // captures left/center/right and loses the
+                // top/middle/bottom row). Round-trip writes the
+                // tag back verbatim via Segment::Raw.
                 let n: i32 = param.trim().parse().unwrap_or(2);
                 let cp = positioning.get_or_insert_with(CuePosition::default);
                 cp.align = ass_alignment_to_textalign(n);
-                true
+                false
+            }
+            "a" => {
+                // Legacy SubStation-Alpha alignment code (still seen
+                // in `.ssa` and older `.ass` files). Apply to the
+                // cue-level horizontal alignment using the SSA-style
+                // mapping (low nibble = L/C/R), then fall through to
+                // passthrough so the animate module can surface the
+                // numpad-converted alignment on RenderState.
+                let n: i32 = param.trim().parse().unwrap_or(2);
+                let cp = positioning.get_or_insert_with(CuePosition::default);
+                cp.align = ssa_alignment_to_textalign(n);
+                false
             }
             "k" | "kf" | "ko" => {
                 let cs: u32 = param.trim().parse().unwrap_or(0);

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed extraction for the `\an<pos>` (numpad) and `\a<pos>` (legacy
+  SubStation-Alpha) line-alignment override tags from the Aegisub
+  reference. `\an1..\an9` map straight to a new
+  `AnimatedTag::An(u8)` carrying the numpad code; `\a<pos>` is kept
+  as `AnimatedTag::A(u8)` and converted to the same numpad surface
+  on apply (low nibble = L/C/R, `+4` = top row, `+8` = mid row, so
+  `\a6` = top-center = numpad `8`, identical to `\an8`). `RenderState`
+  gains `alignment: Option<u8>` (1..=9, `None` = fall back to the
+  style's `Alignment` field) — renderers can now anchor `\pos` /
+  `\move` translation against the documented numpad corner instead
+  of guessing from `cue.positioning.align`'s `Left`/`Center`/`Right`
+  reduction. Both tags are static per spec; inside `\t(...)` they
+  snap to the post-state value at `t > t1` rather than interpolating,
+  mirroring `\q`. Out-of-range `\an` codes (`0`, `10+`) and
+  unrecognised `\a` codes (`4`, `8`, `12+`) drop the override so the
+  renderer keeps the script-style alignment. The base parser now
+  emits both tags into `Segment::Raw` (in addition to populating the
+  existing `cue.positioning.align`), which closes a long-standing
+  round-trip gap: previously the writer dropped the vertical row of
+  the numpad alignment entirely, so a parse → write cycle turned
+  `\an7` into a plain bottom-row default; the tag now survives
+  verbatim.
 - Typed extraction for the `\pos(x, y)` static-positioning override tag
   from the Aegisub / Kotus reference. `\pos` sets the line's position in
   the script-resolution coordinate system (the alignment point is

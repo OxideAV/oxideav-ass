@@ -360,6 +360,71 @@ fn typed_tags_survive_round_trip_as_passthrough() {
     assert!(st.iclip_rect.is_some());
 }
 
+#[test]
+fn an_surfaces_alignment_on_render_state() {
+    // End-to-end: the base parser previously consumed `\an` and only
+    // kept the L/C/R nibble on `cue.positioning.align`; the full
+    // numpad value (which tells the renderer which corner to anchor
+    // `\pos`/`\move` against) was lost. The animate-module surface
+    // now exposes it.
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\an7}}top-left\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let cue = &t.cues[0];
+    let anim = extract_cue_animation(cue);
+    assert!(
+        anim.tags.contains(&AnimatedTag::An(7)),
+        "tags: {:?}",
+        anim.tags
+    );
+    let dur_ms = ((cue.end_us - cue.start_us) / 1000) as i32;
+    let st = anim.evaluate_at(dur_ms / 2, dur_ms);
+    assert_eq!(st.alignment, Some(7));
+    // The cue-level CuePosition.align is still set so existing
+    // consumers that read cue.positioning unchanged.
+    let cp = cue.positioning.as_ref().expect("positioning set");
+    assert_eq!(cp.align, oxideav_core::TextAlign::Left);
+}
+
+#[test]
+fn an_round_trip_preserves_full_numpad() {
+    // The writer used to lose the vertical row of the numpad
+    // alignment (`\an7` came back as `\an1` in practice — and
+    // actually wasn't re-emitted at all because the writer didn't
+    // know how to spell it). Now the tag survives via Segment::Raw,
+    // so a parse → write → reparse cycle preserves the numpad code.
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\an8}}top-center\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    assert!(out.contains("\\an8"), "writer output missing \\an8:\n{out}");
+
+    let t2 = ass::parse(out.as_bytes()).unwrap();
+    let anim2 = extract_cue_animation(&t2.cues[0]);
+    let st2 = anim2.evaluate_at(0, 1000);
+    assert_eq!(st2.alignment, Some(8));
+}
+
+#[test]
+fn legacy_a_surfaces_alignment_on_render_state() {
+    // `\a6` is the canonical legacy "top-center" code (sub-position
+    // 2 + top-flag 4); per Aegisub it should behave identically to
+    // `\an8`. The animate module converts on apply so renderers only
+    // ever see the numpad value 1..=9.
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\a6}}top-center\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let cue = &t.cues[0];
+    let anim = extract_cue_animation(cue);
+    assert!(
+        anim.tags.contains(&AnimatedTag::A(6)),
+        "tags: {:?}",
+        anim.tags
+    );
+    let st = anim.evaluate_at(0, 1000);
+    assert_eq!(st.alignment, Some(8));
+}
+
 // Suppress an unused-import warning when only some helper types are used.
 #[allow(dead_code)]
 fn _ensure_cliprect_import_used(_: ClipRect) {}

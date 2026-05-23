@@ -45,6 +45,18 @@
 //! * `\q(style)` — wrap style override for the line. `0`/`1`/`2`/`3`
 //!   map to the SSA spec wrap modes (smart-top / EOL / no-wrap /
 //!   smart-bottom). Static, not animatable.
+//! * `\an(pos)` — line alignment, numpad layout per the Aegisub spec:
+//!   `1`/`2`/`3` = bottom-left/center/right, `4`/`5`/`6` = middle-
+//!   left/center/right, `7`/`8`/`9` = top-left/center/right. Surfaces
+//!   on [`RenderState::alignment`] as the same numpad value 1..=9 so
+//!   the renderer can anchor the cue's `\pos`/`\move` translate at the
+//!   correct corner. Static, not animatable per spec.
+//! * `\a(pos)` — legacy SubStation-Alpha alignment code (still
+//!   recognised by Aegisub). Calculation per spec: low nibble `1`/`2`/
+//!   `3` for left/center/right; add `4` for top, add `8` for mid. The
+//!   parser converts to the equivalent numpad value and writes the
+//!   same [`RenderState::alignment`] field — so a cue with `\a6`
+//!   surfaces as `alignment = Some(8)` (top-center), matching `\an8`.
 //! * `\2c(&Hbbggrr&)` / `\3c(&Hbbggrr&)` / `\4c(&Hbbggrr&)` —
 //!   secondary fill, border, and shadow colours. `\1c` (alias `\c`) is
 //!   already in this set; the four together cover the four colour
@@ -198,6 +210,24 @@ pub enum AnimatedTag {
     /// `2` = no wrapping, `3` = smart wrap balanced bottom-wider.
     /// Static (not animatable).
     Q(u8),
+    /// `\an<pos>` — line alignment using "numpad" values per the
+    /// Aegisub spec:
+    ///
+    /// * `1` = bottom-left,  `2` = bottom-center,  `3` = bottom-right
+    /// * `4` = middle-left,  `5` = middle-center,  `6` = middle-right
+    /// * `7` = top-left,     `8` = top-center,     `9` = top-right
+    ///
+    /// Out-of-range values are dropped by the parser (the static
+    /// override path then keeps the script-style alignment). Static,
+    /// not animatable per spec.
+    An(u8),
+    /// `\a<pos>` — legacy SubStation-Alpha alignment code. The parser
+    /// converts each recognised legacy code to its numpad equivalent
+    /// (`1`/`2`/`3` = bottom row; `+4` = top row; `+8` = middle row)
+    /// so the renderer only ever has to inspect
+    /// [`RenderState::alignment`]'s 1..=9 surface. Unrecognised codes
+    /// are dropped.
+    A(u8),
     /// `\t([t1,t2,[accel,]] inner_tags)` — interpolate the inner tags
     /// over `[t1, t2]`. When `t1`/`t2` are omitted ASS treats them as
     /// `[0, cue_duration]`. `accel` defaults to 1.0 (linear).
@@ -310,6 +340,20 @@ pub struct RenderState {
     /// `0` smart-top / `1` EOL / `2` no-wrap / `3` smart-bottom.
     /// Not animatable per spec.
     pub wrap_style: Option<u8>,
+    /// `\an<pos>` (or its legacy `\a<pos>` form, converted to numpad)
+    /// alignment override for the line, if set. `None` = fall back to
+    /// the cue's style `Alignment`. Values are the Aegisub numpad
+    /// codes 1..=9:
+    ///
+    /// * `1`/`2`/`3` — bottom-left / bottom-center / bottom-right
+    /// * `4`/`5`/`6` — middle-left / middle-center / middle-right
+    /// * `7`/`8`/`9` — top-left  / top-center  / top-right
+    ///
+    /// The alignment doubles as the anchor point for `\pos` / `\move`
+    /// translation per the Aegisub spec, so renderers should look here
+    /// to decide which glyph corner sits on the `translate` point.
+    /// Static, not animatable.
+    pub alignment: Option<u8>,
 }
 
 impl RenderState {
@@ -344,6 +388,7 @@ impl RenderState {
             shadow_alpha: None,
             letter_spacing: None,
             wrap_style: None,
+            alignment: None,
         }
     }
 }
@@ -561,6 +606,22 @@ fn apply_tag(st: &mut RenderState, tag: &AnimatedTag, t_ms: i32, dur_ms: i32) {
                 st.wrap_style = Some(*mode);
             }
         }
+        AnimatedTag::An(n) => {
+            // ASS numpad alignment: 1..=9 valid; values outside drop
+            // the override (renderer keeps the style's Alignment).
+            if (1..=9).contains(n) {
+                st.alignment = Some(*n);
+            }
+        }
+        AnimatedTag::A(n) => {
+            // Legacy SSA alignment: convert to the equivalent numpad
+            // code per the Aegisub spec. Low nibble = L/C/R, +4 = top,
+            // +8 = mid (= ASS bot/mid/top rows are 1-3 / 7-9 / 4-6 on
+            // the numpad). Unrecognised codes drop the override.
+            if let Some(numpad) = ssa_alignment_to_numpad(*n) {
+                st.alignment = Some(numpad);
+            }
+        }
         AnimatedTag::T {
             t1_ms,
             t2_ms,
@@ -691,6 +752,42 @@ fn apply_t(
         } else {
             pre.wrap_style
         };
+    }
+    // \an / \a are non-animatable per spec — snap on the same k > 0
+    // boundary as \q.
+    if post.alignment != pre.alignment {
+        st.alignment = if k > 0.0 {
+            post.alignment
+        } else {
+            pre.alignment
+        };
+    }
+}
+
+/// Convert a legacy SSA `\a<pos>` code to the equivalent ASS numpad
+/// (`\an<N>`) value, per the Aegisub spec:
+///
+/// > Use 1 for left-alignment, 2 for center alignment and 3 for
+/// > right-alignment. … To get top-titles, add 4 to the number, to
+/// > get mid-titles add 8 to the number.
+///
+/// Returns `None` for codes that do not match a documented legacy
+/// alignment slot.
+fn ssa_alignment_to_numpad(n: u8) -> Option<u8> {
+    // Sub-titles (bottom row): 1, 2, 3 → numpad 1, 2, 3.
+    // Top-titles (+4):         5, 6, 7 → numpad 7, 8, 9.
+    // Mid-titles (+8):         9, 10, 11 → numpad 4, 5, 6.
+    match n {
+        1 => Some(1),
+        2 => Some(2),
+        3 => Some(3),
+        5 => Some(7),
+        6 => Some(8),
+        7 => Some(9),
+        9 => Some(4),
+        10 => Some(5),
+        11 => Some(6),
+        _ => None,
     }
 }
 
@@ -995,6 +1092,31 @@ fn parse_one(name_lc: &str, param: &str) -> Option<AnimatedTag> {
             let n: i32 = param.trim().parse().ok()?;
             if (0..=3).contains(&n) {
                 Some(AnimatedTag::Q(n as u8))
+            } else {
+                None
+            }
+        }
+        "an" => {
+            // `\an<pos>` — numpad alignment 1..=9. Other values are
+            // dropped (the renderer falls back to the style's
+            // Alignment field).
+            let n: i32 = param.trim().parse().ok()?;
+            if (1..=9).contains(&n) {
+                Some(AnimatedTag::An(n as u8))
+            } else {
+                None
+            }
+        }
+        "a" => {
+            // `\a<pos>` — legacy SubStation-Alpha alignment code. We
+            // store the original code unchanged; the evaluator does
+            // the numpad conversion (so the typed tag is still useful
+            // for callers that want to inspect "was the legacy form
+            // used?"). Negative values can never match a legacy slot
+            // so they're rejected up front.
+            let n: i32 = param.trim().parse().ok()?;
+            if (0..=255).contains(&n) {
+                Some(AnimatedTag::A(n as u8))
             } else {
                 None
             }
@@ -2317,5 +2439,143 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\K50}sweep{\\K30}done\n";
         let st = anim.evaluate_at(0, 1000);
         assert_eq!(st.letter_spacing, Some(2.0));
         assert_eq!(st.wrap_style, Some(1));
+    }
+
+    #[test]
+    fn parses_an_in_range() {
+        // Aegisub numpad spec: 1=bl, 2=bc, 3=br, 4=ml, 5=mc, 6=mr,
+        // 7=tl, 8=tc, 9=tr. All nine should parse to AnimatedTag::An.
+        for pos in 1..=9 {
+            let src = format!(r"\an{pos}");
+            let v = parse_block(&src);
+            assert_eq!(v, vec![AnimatedTag::An(pos as u8)]);
+        }
+    }
+
+    #[test]
+    fn parses_an_out_of_range_dropped() {
+        // Only 1..=9 are valid numpad positions per the Aegisub spec;
+        // 0 and 10+ are dropped so the renderer keeps the style's
+        // Alignment field.
+        assert!(parse_block(r"\an0").is_empty());
+        assert!(parse_block(r"\an10").is_empty());
+        assert!(parse_block(r"\an-1").is_empty());
+    }
+
+    #[test]
+    fn parses_legacy_a_known_codes() {
+        // Per the Aegisub spec: low nibble = L/C/R (1/2/3), +4 = top,
+        // +8 = mid. So the recognised legacy codes are
+        // {1,2,3,5,6,7,9,10,11}.
+        let cases: &[(u8, u8)] = &[
+            (1, 1),
+            (2, 2),
+            (3, 3),
+            (5, 7),
+            (6, 8),
+            (7, 9),
+            (9, 4),
+            (10, 5),
+            (11, 6),
+        ];
+        for (legacy, numpad) in cases {
+            let src = format!(r"\a{legacy}");
+            let v = parse_block(&src);
+            assert_eq!(
+                v,
+                vec![AnimatedTag::A(*legacy)],
+                "legacy code {} should parse",
+                legacy
+            );
+            // And the apply path must map it to the right numpad
+            // value on RenderState::alignment.
+            let st = CueAnimation { tags: v }.evaluate_at(0, 1000);
+            assert_eq!(
+                st.alignment,
+                Some(*numpad),
+                "legacy {} should map to numpad {}",
+                legacy,
+                numpad
+            );
+        }
+    }
+
+    #[test]
+    fn parses_legacy_a_unknown_codes_drop_override() {
+        // Codes 4, 8, 12+ are not documented legacy slots; the parser
+        // still records the AnimatedTag::A but the evaluator drops the
+        // alignment override (style alignment wins).
+        for legacy in [4_u8, 8, 12, 20, 255] {
+            let src = format!(r"\a{legacy}");
+            let v = parse_block(&src);
+            assert_eq!(v, vec![AnimatedTag::A(legacy)]);
+            let st = CueAnimation { tags: v }.evaluate_at(0, 1000);
+            assert!(
+                st.alignment.is_none(),
+                "legacy {} should not override alignment",
+                legacy
+            );
+        }
+    }
+
+    #[test]
+    fn evaluate_an_static_override() {
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::An(7)],
+        };
+        let st = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st.alignment, Some(7));
+        // Default identity has no override.
+        assert!(RenderState::identity().alignment.is_none());
+        // Static — does not vary across the cue.
+        let st_mid = cue_anim.evaluate_at(500, 1000);
+        let st_end = cue_anim.evaluate_at(1000, 1000);
+        assert_eq!(st_mid.alignment, Some(7));
+        assert_eq!(st_end.alignment, Some(7));
+    }
+
+    #[test]
+    fn an_static_inside_t_snaps_post() {
+        // \an is not animatable per spec (Aegisub: "Specify the
+        // alignment of the line"); inside \t it should snap to the
+        // post-value once t1 has elapsed, mirroring \q.
+        let v = parse_block(r"\an2\t(500,1000,\an8)");
+        assert_eq!(v.len(), 2);
+        let cue_anim = CueAnimation { tags: v };
+        // Pre-transition: pre-value (numpad 2 = bottom-center).
+        let st_before = cue_anim.evaluate_at(0, 1000);
+        assert_eq!(st_before.alignment, Some(2));
+        // Once t > t1: post-value (numpad 8 = top-center).
+        let st_mid = cue_anim.evaluate_at(750, 1000);
+        assert_eq!(st_mid.alignment, Some(8));
+        let st_end = cue_anim.evaluate_at(1000, 1000);
+        assert_eq!(st_end.alignment, Some(8));
+    }
+
+    #[test]
+    fn an_later_overrides_earlier_legacy_a() {
+        // Last-writer-wins, matching the static-override model.
+        let v = parse_block(r"\a6\an1");
+        assert_eq!(v.len(), 2);
+        let st = CueAnimation { tags: v }.evaluate_at(0, 1000);
+        assert_eq!(st.alignment, Some(1));
+    }
+
+    #[test]
+    fn extract_an_from_cue_segment() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            positioning: None,
+            segments: vec![
+                Segment::Raw(r"{\an5}".into()),
+                Segment::Text("centered".into()),
+            ],
+        };
+        let anim = extract_cue_animation(&cue);
+        assert_eq!(anim.tags, vec![AnimatedTag::An(5)]);
+        let st = anim.evaluate_at(0, 1000);
+        assert_eq!(st.alignment, Some(5));
     }
 }
