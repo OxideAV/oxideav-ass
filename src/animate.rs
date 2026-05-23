@@ -16,6 +16,9 @@
 //!   `a1` until `t1`, ramps to `a2` by `t2`, holds `a2` until `t3`,
 //!   ramps to `a3` by `t4`. Alpha values use the ASS convention
 //!   (`0` = opaque, `255` = transparent).
+//! * `\pos(x, y)` — set the static line position (script-resolution
+//!   coordinates). The non-moving counterpart of `\move`; both write
+//!   [`RenderState::translate`]. Static, not animatable.
 //! * `\move(x1, y1, x2, y2[, t1, t2])` — translate the rendered text
 //!   from `(x1, y1)` at `t1` to `(x2, y2)` at `t2` (defaults: t1 = 0,
 //!   t2 = cue duration).
@@ -94,6 +97,13 @@ pub enum AnimatedTag {
         t3_ms: i32,
         t4_ms: i32,
     },
+    /// `\pos(x, y)` — set the static position of the line. Per the
+    /// Aegisub spec the coordinates are in the script-resolution
+    /// coordinate system and the line's alignment point is anchored
+    /// there. Static (not animatable); it is the non-moving
+    /// counterpart of [`AnimatedTag::Move`] and writes the same
+    /// [`RenderState::translate`] field.
+    Pos { x: f32, y: f32 },
     /// `\move(x1, y1, x2, y2[, t1, t2])`. `t1`/`t2` default to the cue
     /// span when omitted.
     Move {
@@ -400,6 +410,13 @@ fn apply_tag(st: &mut RenderState, tag: &AnimatedTag, t_ms: i32, dur_ms: i32) {
         } => {
             let a = fade_alpha(*a1, *a2, *a3, *t1_ms, *t2_ms, *t3_ms, *t4_ms, t_ms);
             st.alpha_mul *= ass_alpha_to_mul(a);
+        }
+        AnimatedTag::Pos { x, y } => {
+            // \pos is the static counterpart of \move; both write the
+            // line position into `translate`. Last writer wins, matching
+            // the rest of this module's static-override model — so a
+            // later \move (or \pos) overrides an earlier \pos.
+            st.translate = Some((*x, *y));
         }
         AnimatedTag::Move {
             x1,
@@ -932,6 +949,17 @@ fn parse_one(name_lc: &str, param: &str) -> Option<AnimatedTag> {
         "frz" | "fr" => param.trim().parse::<f32>().ok().map(AnimatedTag::Frz),
         "frx" => param.trim().parse::<f32>().ok().map(AnimatedTag::Frx),
         "fry" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fry),
+        "pos" => {
+            // `\pos(x, y)` — static line position. The spec requires
+            // integer coordinates, but VSFilter/libass tolerate decimals
+            // in the wild, so parse as floats like \move / \org do.
+            let n = parse_float_list(param);
+            if n.len() == 2 {
+                Some(AnimatedTag::Pos { x: n[0], y: n[1] })
+            } else {
+                None
+            }
+        }
         "org" => {
             let n = parse_float_list(param);
             if n.len() == 2 {
@@ -1380,6 +1408,63 @@ mod tests {
         };
         let st = cue_anim.evaluate_at(500, 1000);
         assert_eq!(st.translate, Some((50.0, 50.0)));
+    }
+
+    #[test]
+    fn parses_pos() {
+        let v = parse_block(r"\pos(320,240)");
+        assert_eq!(v, vec![AnimatedTag::Pos { x: 320.0, y: 240.0 }]);
+        // Decimals tolerated even though the spec asks for integers.
+        let v = parse_block(r"\pos(12.5,-3.0)");
+        assert_eq!(v, vec![AnimatedTag::Pos { x: 12.5, y: -3.0 }]);
+        // Wrong arity → dropped (round-trip text path still keeps it raw).
+        assert!(parse_block(r"\pos(320)").is_empty());
+        assert!(parse_block(r"\pos(1,2,3)").is_empty());
+    }
+
+    #[test]
+    fn evaluate_pos_is_static() {
+        // \pos sets a constant position the renderer can anchor to; it
+        // does not vary with time.
+        let cue_anim = CueAnimation {
+            tags: vec![AnimatedTag::Pos { x: 320.0, y: 240.0 }],
+        };
+        assert_eq!(
+            cue_anim.evaluate_at(0, 1000).translate,
+            Some((320.0, 240.0))
+        );
+        assert_eq!(
+            cue_anim.evaluate_at(500, 1000).translate,
+            Some((320.0, 240.0))
+        );
+        assert_eq!(
+            cue_anim.evaluate_at(1000, 1000).translate,
+            Some((320.0, 240.0))
+        );
+    }
+
+    #[test]
+    fn move_after_pos_overrides() {
+        // \move and \pos both target the line position; the later tag
+        // wins (last-writer-wins, matching the rest of the module).
+        let cue_anim = CueAnimation {
+            tags: vec![
+                AnimatedTag::Pos { x: 10.0, y: 10.0 },
+                AnimatedTag::Move {
+                    x1: 0.0,
+                    y1: 0.0,
+                    x2: 100.0,
+                    y2: 100.0,
+                    t1_ms: Some(0),
+                    t2_ms: Some(1000),
+                },
+            ],
+        };
+        // The \move drives translate, not the earlier \pos.
+        assert_eq!(
+            cue_anim.evaluate_at(500, 1000).translate,
+            Some((50.0, 50.0))
+        );
     }
 
     #[test]

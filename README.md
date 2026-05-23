@@ -110,7 +110,9 @@ What the parser understands and preserves on round-trip:
   Unknown tags survive parsing as opaque pass-through so round-trip
   keeps them intact, even when mixed with tags the parser does
   interpret.
-- **Animated tags** — `\fad(t1,t2)`, `\fade(7-arg)`, `\move(...)`,
+- **Animated tags** — `\fad(t1,t2)`, `\fade(7-arg)`, `\pos(x,y)`
+  (static line position; non-moving counterpart of `\move`, writes the
+  same `translate` field), `\move(...)`,
   `\frz`, `\frx`, `\fry`, `\org(x,y)`, `\blur`, `\be`, `\bord`,
   `\xbord`, `\ybord`, `\shad`, `\xshad`, `\yshad`, `\fax`, `\fay`,
   `\fsp` (letter spacing, animatable), `\fscx` / `\fscy`, `\1c` /

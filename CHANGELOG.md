@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed extraction for the `\pos(x, y)` static-positioning override tag
+  from the Aegisub / Kotus reference. `\pos` sets the line's position in
+  the script-resolution coordinate system (the alignment point is
+  anchored there); it is the non-moving counterpart of `\move` and now
+  surfaces a new `AnimatedTag::Pos { x, y }` variant that writes the
+  same `RenderState::translate` field `\move` populates. A `\pos`-only
+  cue therefore yields a usable `translate` from `evaluate_at` instead
+  of `None`. `\pos` is static (not animatable per spec) so the position
+  is constant across time; when both `\pos` and `\move` are present the
+  later tag wins (last-writer-wins, matching the module's static-
+  override model). Coordinates parse as floats so decimal values seen
+  in the wild are tolerated even though the spec asks for integers;
+  wrong-arity forms are dropped (the textual round-trip still keeps
+  them verbatim via `Segment::Raw`).
 - Typed extraction for two more override tags from the Aegisub /
   TCAX spec: `\fsp(spacing)` (additive letter-spacing in script-
   resolution pixels — may be negative or decimal, fully animatable
