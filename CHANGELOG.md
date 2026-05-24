@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.7](https://github.com/OxideAV/oxideav-ass/compare/v0.0.6...v0.0.7) - 2026-05-24
+
+### Other
+
+- typed extraction of the \k karaoke-timing family
+- typed extraction for \an / \a line-alignment overrides
+- drop renderer-name from \pos decimal-tolerance comment
+- typed extraction for \pos static line position
+- typed extraction for \fsp letter-spacing + \q wrap-style
+- drop libass / Aegisub cross-reference from module docstring
+- typed extraction for \2c/\3c/\4c colours + \alpha/\1a..\4a per-component alpha
+- typed extraction for \bord/\xbord/\ybord, \shad/\xshad/\yshad, \be, \fax/\fay, \iclip
+- preserve unknown / Fonts / Graphics section bodies on round-trip
+
 ### Added
 
 - Typed extraction for the `\k` karaoke-timing family (`\k`, `\K`,
