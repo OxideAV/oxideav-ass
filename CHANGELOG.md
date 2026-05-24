@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed extraction for the `\k` karaoke-timing family (`\k`, `\K`,
+  `\kf`, `\ko`) from the Aegisub override-tag reference. Each marker
+  surfaces as a new `AnimatedTag::Karaoke { kind, cs }` carrying the
+  syllable duration in centiseconds and a `KaraokeKind` discriminant —
+  `Fill` for the instant secondary→primary switch (`\k`), `Sweep` for
+  the left-to-right secondary→primary wipe (`\kf`, and the identical
+  uppercase `\K`), and `Outline` for the border-reveal variant (`\ko`).
+  The case-sensitive `\K` vs `\k` distinction is preserved (the base
+  parser lowercases tag names, so the original case is now threaded
+  through to the karaoke arm). A new `CueAnimation::karaoke_spans()`
+  resolves the in-order markers into cumulative `KaraokeSpan`s
+  (`start_ms`/`end_ms` from the cue start, exact centisecond→ms
+  conversion), and `KaraokeSpan::progress(t)` gives the `0.0..=1.0`
+  highlight position for the active syllable (the left-to-right wipe
+  fraction for `Sweep`; the started/not-started boundary for
+  `Fill`/`Outline`). Karaoke is a timeline-level concept, so the
+  evaluator treats it as a no-op on `RenderState` (the affine / colour /
+  alpha transform stays at identity) — renderers walk the spans. The
+  full parse path also resolves karaoke through the base parser's
+  `Segment::Karaoke` markers (kind reported as the conservative `Fill`
+  default, since the core marker drops the family member; the
+  centisecond duration survives). Negative durations clamp to `0`; `\kt`
+  is deliberately not handled per the Aegisub note that it is
+  undocumented/unsupported (the textual round-trip keeps it verbatim via
+  `Segment::Raw`).
 - Typed extraction for the `\an<pos>` (numpad) and `\a<pos>` (legacy
   SubStation-Alpha) line-alignment override tags from the Aegisub
   reference. `\an1..\an9` map straight to a new

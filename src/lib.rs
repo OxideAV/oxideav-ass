@@ -28,7 +28,8 @@ pub mod render;
 pub mod transform;
 
 pub use animate::{
-    extract_cue_animation, parse_overrides, AnimatedTag, ClipRect, CueAnimation, RenderState,
+    extract_cue_animation, parse_overrides, AnimatedTag, ClipRect, CueAnimation, KaraokeKind,
+    KaraokeSpan, RenderState,
 };
 pub use drawing::parse_drawing;
 #[cfg(feature = "render")]

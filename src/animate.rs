@@ -92,6 +92,82 @@
 
 use oxideav_core::{Segment, SubtitleCue, Transform2D};
 
+/// Which member of the `\k` karaoke-timing family produced a syllable
+/// marker.
+///
+/// Per the Aegisub override-tag reference, the `\k` family marks up a
+/// dialogue line for karaoke by giving the duration of each syllable;
+/// the four members differ only in the *visual* transition they ask the
+/// renderer for, not in the timing they encode:
+///
+/// * [`Fill`](KaraokeKind::Fill) (`\k`) — before the syllable's
+///   highlight the glyphs use the secondary colour + alpha; when the
+///   syllable starts, the fill switches *instantly* to the primary
+///   colour + alpha.
+/// * [`Sweep`](KaraokeKind::Sweep) (`\kf`, and the identical `\K`) — the
+///   fill starts secondary and sweeps left-to-right from secondary to
+///   primary across the syllable's duration, finishing exactly when the
+///   syllable time is over.
+/// * [`Outline`](KaraokeKind::Outline) (`\ko`) — like `\k`, except the
+///   glyph border/outline is *removed* before highlight and appears
+///   instantly when the syllable starts.
+///
+/// The base parser collapses all three (plus `\K`) into a single
+/// `oxideav_core::Segment::Karaoke` marker that does not record which
+/// member was used, so the kind is only recoverable when parsing raw
+/// override text directly (e.g. through [`parse_overrides`]). Karaoke
+/// markers recovered from already-parsed `Segment::Karaoke` segments
+/// therefore report [`KaraokeKind::Fill`] as the conservative default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KaraokeKind {
+    /// `\k` — instant fill switch at the syllable boundary.
+    Fill,
+    /// `\kf` / `\K` — left-to-right secondary→primary sweep across the
+    /// syllable.
+    Sweep,
+    /// `\ko` — outline removed before highlight, appears instantly.
+    Outline,
+}
+
+/// One karaoke syllable's resolved timing span within a cue.
+///
+/// Produced by [`CueAnimation::karaoke_spans`]. Times are milliseconds
+/// from the cue start; each span runs `[start_ms, end_ms)` and the next
+/// syllable begins exactly where the previous one ends (the `\k`
+/// durations are cumulative per the Aegisub spec, which gives each
+/// syllable's duration in centiseconds).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KaraokeSpan {
+    /// Which `\k` member produced this syllable.
+    pub kind: KaraokeKind,
+    /// Start of the syllable, ms from cue start.
+    pub start_ms: u32,
+    /// End of the syllable (= start of the next syllable), ms from cue
+    /// start.
+    pub end_ms: u32,
+}
+
+impl KaraokeSpan {
+    /// Fraction (`0.0..=1.0`) of the way through this syllable at
+    /// `t_in_cue_ms`, milliseconds from the cue start.
+    ///
+    /// `0.0` before the syllable starts, `1.0` at or after its end. For
+    /// a [`KaraokeKind::Sweep`] syllable this is the left-to-right wipe
+    /// position; for [`KaraokeKind::Fill`] / [`KaraokeKind::Outline`]
+    /// the renderer only needs to know whether the value crossed `0.0`
+    /// (i.e. whether the syllable has started), since those switch
+    /// instantly.
+    pub fn progress(&self, t_in_cue_ms: i32) -> f32 {
+        if t_in_cue_ms <= self.start_ms as i32 {
+            return 0.0;
+        }
+        if t_in_cue_ms >= self.end_ms as i32 || self.end_ms <= self.start_ms {
+            return 1.0;
+        }
+        (t_in_cue_ms - self.start_ms as i32) as f32 / (self.end_ms - self.start_ms) as f32
+    }
+}
+
 /// One typed animated-tag occurrence found in a cue.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AnimatedTag {
@@ -228,6 +304,17 @@ pub enum AnimatedTag {
     /// [`RenderState::alignment`]'s 1..=9 surface. Unrecognised codes
     /// are dropped.
     A(u8),
+    /// `\k` / `\K` / `\kf` / `\ko` — a karaoke syllable timing marker.
+    /// `cs` is the syllable's duration in **centiseconds** (the unit the
+    /// `\k` family uses; `100` = one second), and `kind` records which
+    /// member of the family produced it. These markers appear once per
+    /// syllable in document order; [`CueAnimation::karaoke_spans`]
+    /// resolves them into cumulative millisecond [`KaraokeSpan`]s.
+    ///
+    /// Unlike the transform / colour tags this is a timeline-level
+    /// concept rather than a per-frame state, so [`apply_tag`] treats it
+    /// as a no-op on [`RenderState`]; renderers walk the spans instead.
+    Karaoke { kind: KaraokeKind, cs: u32 },
     /// `\t([t1,t2,[accel,]] inner_tags)` — interpolate the inner tags
     /// over `[t1, t2]`. When `t1`/`t2` are omitted ASS treats them as
     /// `[0, cue_duration]`. `accel` defaults to 1.0 (linear).
@@ -249,6 +336,32 @@ impl CueAnimation {
     /// `true` iff there are no tags.
     pub fn is_empty(&self) -> bool {
         self.tags.is_empty()
+    }
+
+    /// Resolve the cue's `\k` family markers into cumulative
+    /// [`KaraokeSpan`]s, milliseconds from the cue start.
+    ///
+    /// Every [`AnimatedTag::Karaoke`] in `tags` (in document order)
+    /// becomes one span; each span begins where the previous one ended,
+    /// so the centisecond durations the `\k` tags carry add up into a
+    /// continuous syllable timeline. Cues with no karaoke markers yield
+    /// an empty vector. The centisecond → millisecond conversion is
+    /// exact (`cs * 10`).
+    pub fn karaoke_spans(&self) -> Vec<KaraokeSpan> {
+        let mut spans = Vec::new();
+        let mut cursor_ms: u32 = 0;
+        for tag in &self.tags {
+            if let AnimatedTag::Karaoke { kind, cs } = tag {
+                let end_ms = cursor_ms.saturating_add(cs.saturating_mul(10));
+                spans.push(KaraokeSpan {
+                    kind: *kind,
+                    start_ms: cursor_ms,
+                    end_ms,
+                });
+                cursor_ms = end_ms;
+            }
+        }
+        spans
     }
 }
 
@@ -622,6 +735,13 @@ fn apply_tag(st: &mut RenderState, tag: &AnimatedTag, t_ms: i32, dur_ms: i32) {
                 st.alignment = Some(numpad);
             }
         }
+        AnimatedTag::Karaoke { .. } => {
+            // Timeline-level concept: the per-syllable highlight timing
+            // lives on the cue, not on the single-instant RenderState.
+            // Renderers walk CueAnimation::karaoke_spans() to find which
+            // syllable is active and how far its highlight has advanced.
+            // Nothing to apply to the affine / colour / alpha state here.
+        }
         AnimatedTag::T {
             t1_ms,
             t2_ms,
@@ -900,8 +1020,19 @@ fn walk_segments(segs: &[Segment], out: &mut Vec<AnimatedTag>) {
             Segment::Color { children, .. }
             | Segment::Font { children, .. }
             | Segment::Voice { children, .. }
-            | Segment::Class { children, .. }
-            | Segment::Karaoke { children, .. } => walk_segments(children, out),
+            | Segment::Class { children, .. } => walk_segments(children, out),
+            Segment::Karaoke { cs, children } => {
+                // The base parser collapses `\k` / `\K` / `\kf` / `\ko`
+                // into this marker without keeping which member it was,
+                // so the kind is reported as the conservative Fill
+                // default. The centisecond duration survives, which is
+                // what `karaoke_spans` needs for the syllable timeline.
+                out.push(AnimatedTag::Karaoke {
+                    kind: KaraokeKind::Fill,
+                    cs: *cs,
+                });
+                walk_segments(children, out);
+            }
             _ => {}
         }
     }
@@ -950,7 +1081,11 @@ pub fn parse_overrides(block: &str, out: &mut Vec<AnimatedTag>) {
         let (param, advance) = read_param(&block[i..]);
         i += advance;
         let name_lc = name.to_ascii_lowercase();
-        if let Some(t) = parse_one(&name_lc, &param) {
+        // `name` (original case) is passed alongside the lowercased form
+        // because the karaoke family is case-sensitive: `\K` (uppercase)
+        // is the secondary→primary sweep, identical to `\kf`, while `\k`
+        // (lowercase) is the instant fill switch.
+        if let Some(t) = parse_one(&name_lc, name, &param) {
             out.push(t);
         }
     }
@@ -992,7 +1127,7 @@ fn read_param(s: &str) -> (String, usize) {
     }
 }
 
-fn parse_one(name_lc: &str, param: &str) -> Option<AnimatedTag> {
+fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag> {
     match name_lc {
         "fad" => {
             let nums = parse_int_list(param);
@@ -1120,6 +1255,24 @@ fn parse_one(name_lc: &str, param: &str) -> Option<AnimatedTag> {
             } else {
                 None
             }
+        }
+        "k" | "kf" | "ko" => {
+            // `\k` family — per-syllable karaoke duration in
+            // centiseconds. `\K` (uppercase) lowercases to `k` here, so
+            // resolve the kind from the original-cased name: lowercase
+            // `\k` = instant fill, `\K` = sweep (identical to `\kf`).
+            // Negative durations clamp to 0. `\kt` is deliberately not
+            // handled (Aegisub: "rarely useful … not documented").
+            let cs = param.trim().parse::<f32>().ok()?;
+            let cs = cs.max(0.0).round() as u32;
+            let kind = match name_lc {
+                "kf" => KaraokeKind::Sweep,
+                "ko" => KaraokeKind::Outline,
+                // bare "k": uppercase `\K` is the sweep variant.
+                _ if name_orig == "K" => KaraokeKind::Sweep,
+                _ => KaraokeKind::Fill,
+            };
+            Some(AnimatedTag::Karaoke { kind, cs })
         }
         "c" | "1c" => parse_color_rgb(param).map(AnimatedTag::Color1),
         "2c" => parse_color_rgb(param).map(AnimatedTag::Color2),
@@ -2577,5 +2730,152 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\K50}sweep{\\K30}done\n";
         assert_eq!(anim.tags, vec![AnimatedTag::An(5)]);
         let st = anim.evaluate_at(0, 1000);
         assert_eq!(st.alignment, Some(5));
+    }
+
+    // ---------------------------------------------------------------
+    // \k karaoke-timing family coverage (round 115).
+
+    #[test]
+    fn parses_k_family_kinds() {
+        // Lowercase \k = instant Fill; \kf = Sweep; \ko = Outline.
+        assert_eq!(
+            parse_block(r"\k50"),
+            vec![AnimatedTag::Karaoke {
+                kind: KaraokeKind::Fill,
+                cs: 50,
+            }]
+        );
+        assert_eq!(
+            parse_block(r"\kf30"),
+            vec![AnimatedTag::Karaoke {
+                kind: KaraokeKind::Sweep,
+                cs: 30,
+            }]
+        );
+        assert_eq!(
+            parse_block(r"\ko20"),
+            vec![AnimatedTag::Karaoke {
+                kind: KaraokeKind::Outline,
+                cs: 20,
+            }]
+        );
+    }
+
+    #[test]
+    fn capital_k_is_sweep_identical_to_kf() {
+        // Aegisub: "\K and \kf are identical". The uppercase form must
+        // resolve to Sweep, not the lowercase \k Fill.
+        let cap = parse_block(r"\K40");
+        let kf = parse_block(r"\kf40");
+        assert_eq!(
+            cap,
+            vec![AnimatedTag::Karaoke {
+                kind: KaraokeKind::Sweep,
+                cs: 40,
+            }]
+        );
+        assert_eq!(cap, kf);
+    }
+
+    #[test]
+    fn k_negative_duration_clamps_to_zero() {
+        assert_eq!(
+            parse_block(r"\k-10"),
+            vec![AnimatedTag::Karaoke {
+                kind: KaraokeKind::Fill,
+                cs: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn kt_is_not_handled() {
+        // Aegisub explicitly leaves \kt undocumented/unsupported; we
+        // skip it (the round-trip text path keeps it verbatim via Raw).
+        assert!(parse_block(r"\kt100").is_empty());
+    }
+
+    #[test]
+    fn karaoke_spans_are_cumulative() {
+        // Two syllables of 50cs then 30cs → [0,500), [500,800) ms.
+        let v = parse_block(r"\k50\kf30");
+        let anim = CueAnimation { tags: v };
+        let spans = anim.karaoke_spans();
+        assert_eq!(
+            spans,
+            vec![
+                KaraokeSpan {
+                    kind: KaraokeKind::Fill,
+                    start_ms: 0,
+                    end_ms: 500,
+                },
+                KaraokeSpan {
+                    kind: KaraokeKind::Sweep,
+                    start_ms: 500,
+                    end_ms: 800,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn karaoke_span_progress() {
+        let span = KaraokeSpan {
+            kind: KaraokeKind::Sweep,
+            start_ms: 500,
+            end_ms: 800,
+        };
+        assert_eq!(span.progress(400), 0.0); // before
+        assert_eq!(span.progress(500), 0.0); // at start
+        assert!((span.progress(650) - 0.5).abs() < 1e-6); // halfway
+        assert_eq!(span.progress(800), 1.0); // at end
+        assert_eq!(span.progress(900), 1.0); // after
+    }
+
+    #[test]
+    fn karaoke_zero_length_span_progress_is_one_past_start() {
+        let span = KaraokeSpan {
+            kind: KaraokeKind::Fill,
+            start_ms: 100,
+            end_ms: 100,
+        };
+        assert_eq!(span.progress(50), 0.0);
+        assert_eq!(span.progress(150), 1.0);
+    }
+
+    #[test]
+    fn karaoke_is_noop_on_render_state() {
+        // \k carries timeline info, not per-frame transform/colour
+        // state; evaluate_at must leave RenderState at identity.
+        let v = parse_block(r"\k50\kf30");
+        let st = CueAnimation { tags: v }.evaluate_at(250, 1000);
+        assert_eq!(st, RenderState::identity());
+    }
+
+    #[test]
+    fn extract_karaoke_from_cue_segments() {
+        // Through the full parse → extract path the base parser emits
+        // Segment::Karaoke markers; karaoke_spans must still resolve
+        // their cumulative timing (kind defaults to Fill since the
+        // marker drops the family member).
+        use crate::parse;
+        let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[V4+ Styles]\n\
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, Alignment, MarginL, MarginR, MarginV, Outline, Shadow\n\
+Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,2,10,10,10,1,0\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\k50}la{\\kf30}la\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let anim = extract_cue_animation(&t.cues[0]);
+        let spans = anim.karaoke_spans();
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].start_ms, 0);
+        assert_eq!(spans[0].end_ms, 500);
+        assert_eq!(spans[1].start_ms, 500);
+        assert_eq!(spans[1].end_ms, 800);
     }
 }

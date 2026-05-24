@@ -133,6 +133,23 @@ What the parser understands and preserves on round-trip:
   outline / shadow colours, per-channel alphas independent of the
   `\fad` envelope, pivot, per-axis rotations) at any timestamp. The
   textual round-trip continues to emit the original tags verbatim.
+- **Karaoke timing** — the `\k` family (`\k` instant fill / `\kf` and
+  the identical uppercase `\K` left-to-right sweep / `\ko` outline
+  reveal) is extracted as typed `AnimatedTag::Karaoke { kind, cs }`
+  markers (`KaraokeKind` + centisecond duration). Because karaoke is a
+  per-syllable timeline rather than a per-frame state,
+  `CueAnimation::karaoke_spans()` resolves the in-order markers into
+  cumulative `KaraokeSpan`s (`start_ms`/`end_ms` from cue start), and
+  `KaraokeSpan::progress(t)` gives the `0.0..=1.0` highlight position
+  (the wipe fraction for a sweep syllable; the started/not-started
+  boundary for the instant kinds). The evaluator leaves `RenderState`
+  untouched for karaoke — renderers walk the spans. `\kt` is not
+  modelled (undocumented per the Aegisub reference); it round-trips
+  verbatim. Note: when karaoke is recovered through the base parser's
+  collapsed `Segment::Karaoke` markers the family member is reported as
+  the conservative `Fill` default (the core marker keeps only the
+  duration); the full `KaraokeKind` survives when parsing raw override
+  text directly via `parse_overrides`.
 - **Drawing-mode parser** — the `\clip(drawing)` and `\p` mini
   language (`m`/`n`/`l`/`b`/`s`/`p`/`c`) is parsed via
   `oxideav_ass::parse_drawing(s, scale_exp)` into an
