@@ -472,9 +472,8 @@ fn frx_fry_combined_independent_fields() {
     // `{\frx30\fry45}` — both axes set in the same override block. The
     // two axes are independent state fields on the RenderState; one
     // must not clobber the other.
-    let src = format!(
-        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\frx30\\fry45}}xy\n"
-    );
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\frx30\\fry45}}xy\n");
     let t = ass::parse(src.as_bytes()).unwrap();
     let anim = extract_cue_animation(&t.cues[0]);
     assert_eq!(anim.tags.len(), 2, "tags: {:?}", anim.tags);
@@ -551,9 +550,8 @@ fn frx_fry_round_trip_preserves_raw_block() {
     // verbatim through `ass::write`, and re-parsing the output must
     // still produce the same typed AnimatedTag values. Parallel of
     // the `round_trip_preserves_animated_tags` test that pins \frz.
-    let src = format!(
-        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\frx30\\fry45}}xy\n"
-    );
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\frx30\\fry45}}xy\n");
     let t = ass::parse(src.as_bytes()).unwrap();
     let out = String::from_utf8(ass::write(&t)).unwrap();
     for needle in ["\\frx30", "\\fry45", "xy"] {
@@ -561,8 +559,14 @@ fn frx_fry_round_trip_preserves_raw_block() {
     }
     let t2 = ass::parse(out.as_bytes()).unwrap();
     let anim2 = extract_cue_animation(&t2.cues[0]);
-    assert!(anim2.tags.iter().any(|t| matches!(t, AnimatedTag::Frx(v) if (*v - 30.0).abs() < 1e-6)));
-    assert!(anim2.tags.iter().any(|t| matches!(t, AnimatedTag::Fry(v) if (*v - 45.0).abs() < 1e-6)));
+    assert!(anim2
+        .tags
+        .iter()
+        .any(|t| matches!(t, AnimatedTag::Frx(v) if (*v - 30.0).abs() < 1e-6)));
+    assert!(anim2
+        .tags
+        .iter()
+        .any(|t| matches!(t, AnimatedTag::Fry(v) if (*v - 45.0).abs() < 1e-6)));
 }
 
 #[test]
