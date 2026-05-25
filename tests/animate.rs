@@ -425,6 +425,161 @@ fn legacy_a_surfaces_alignment_on_render_state() {
     assert_eq!(st.alignment, Some(8));
 }
 
+// -----------------------------------------------------------------------
+// r131 typed-tag coverage: \frx / \fry — the X- and Y-axis 3D rotation
+// pair from the Aegisub override-tag reference. \frx and \fry are
+// documented alongside \frz as the "text rotation" family (X / Y / Z
+// axis, in degrees). The parser already produces typed
+// `AnimatedTag::Frx` / `Fry` variants; these tests pin the static-
+// extraction path, the `\t(...)` interpolation path, and the textual
+// round-trip behaviour, mirroring the existing `\frz` tests above so a
+// regression in either family fails an explicit assertion.
+
+#[test]
+fn frx_static_rotation() {
+    // \frx45 surfaces as `AnimatedTag::Frx(45.0)` and writes
+    // `rotate_x_radians = π/4` on the resolved RenderState — parallel
+    // to the \frz45 case above.
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\frx45}}flip-x\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert!(matches!(anim.tags[0], AnimatedTag::Frx(45.0)));
+    let st = anim.evaluate_at(500, 1000);
+    assert!((st.rotate_x_radians - std::f32::consts::FRAC_PI_4).abs() < 1e-5);
+    // The Z-axis rotation stays untouched (independent state field).
+    assert!(st.rotate_radians.abs() < 1e-6);
+    assert!(st.rotate_y_radians.abs() < 1e-6);
+}
+
+#[test]
+fn fry_static_rotation() {
+    // \fry-45 — negative angle per the Aegisub example
+    // "rotate the text 45 degrees in opposite direction on the Y axis".
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\fry-45}}flip-y\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert!(matches!(anim.tags[0], AnimatedTag::Fry(-45.0)));
+    let st = anim.evaluate_at(500, 1000);
+    assert!((st.rotate_y_radians + std::f32::consts::FRAC_PI_4).abs() < 1e-5);
+    assert!(st.rotate_x_radians.abs() < 1e-6);
+    assert!(st.rotate_radians.abs() < 1e-6);
+}
+
+#[test]
+fn frx_fry_combined_independent_fields() {
+    // `{\frx30\fry45}` — both axes set in the same override block. The
+    // two axes are independent state fields on the RenderState; one
+    // must not clobber the other.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\frx30\\fry45}}xy\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert_eq!(anim.tags.len(), 2, "tags: {:?}", anim.tags);
+    assert!(matches!(anim.tags[0], AnimatedTag::Frx(30.0)));
+    assert!(matches!(anim.tags[1], AnimatedTag::Fry(45.0)));
+    let st = anim.evaluate_at(0, 1000);
+    assert!((st.rotate_x_radians - 30.0_f32.to_radians()).abs() < 1e-5);
+    assert!((st.rotate_y_radians - 45.0_f32.to_radians()).abs() < 1e-5);
+    // No Z-axis rotation: only the explicit axes are touched.
+    assert!(st.rotate_radians.abs() < 1e-6);
+}
+
+#[test]
+fn t_interpolates_frx() {
+    // `{\t(0,1000,\frx90)}` — linear interpolation of the X-axis
+    // rotation from 0 to π/2 over the cue. Same machinery the
+    // existing `\frz` interpolation test exercises, applied to the
+    // X-axis state field. Mid-cue the renderer should see π/4.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\t(0,1000,\\frx90)}}tilt-x\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert_eq!(anim.tags.len(), 1);
+    let dur_ms = ((t.cues[0].end_us - t.cues[0].start_us) / 1000) as i32;
+    let st0 = anim.evaluate_at(0, dur_ms);
+    assert!(st0.rotate_x_radians.abs() < 1e-6);
+    let st_mid = anim.evaluate_at(500, dur_ms);
+    assert!((st_mid.rotate_x_radians - std::f32::consts::FRAC_PI_4).abs() < 1e-5);
+    let st_end = anim.evaluate_at(1000, dur_ms);
+    assert!((st_end.rotate_x_radians - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+    // Y-axis and Z-axis untouched.
+    assert!(st_end.rotate_y_radians.abs() < 1e-6);
+    assert!(st_end.rotate_radians.abs() < 1e-6);
+}
+
+#[test]
+fn t_interpolates_fry() {
+    // Parallel of the `\frz` `\t` interpolation, on the Y axis. Mid-
+    // cue the renderer should see 30° = π/6 (half of 60°).
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\t(0,2000,\\fry60)}}spin-y\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    let dur_ms = ((t.cues[0].end_us - t.cues[0].start_us) / 1000) as i32;
+    let st0 = anim.evaluate_at(0, dur_ms);
+    assert!(st0.rotate_y_radians.abs() < 1e-6);
+    let st_mid = anim.evaluate_at(1000, dur_ms);
+    assert!((st_mid.rotate_y_radians - 30.0_f32.to_radians()).abs() < 1e-5);
+    let st_end = anim.evaluate_at(2000, dur_ms);
+    assert!((st_end.rotate_y_radians - 60.0_f32.to_radians()).abs() < 1e-5);
+    assert!(st_end.rotate_x_radians.abs() < 1e-6);
+}
+
+#[test]
+fn t_interpolates_frx_and_fry_together() {
+    // Both axes interpolated in the same `\t(...)` envelope. Each
+    // axis carries its own pre / post snapshot through the lerp.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\t(0,1000,\\frx90\\fry-90)}}swivel\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    let dur_ms = ((t.cues[0].end_us - t.cues[0].start_us) / 1000) as i32;
+    let st_mid = anim.evaluate_at(500, dur_ms);
+    assert!((st_mid.rotate_x_radians - std::f32::consts::FRAC_PI_4).abs() < 1e-5);
+    assert!((st_mid.rotate_y_radians + std::f32::consts::FRAC_PI_4).abs() < 1e-5);
+}
+
+#[test]
+fn frx_fry_round_trip_preserves_raw_block() {
+    // Textual round-trip: a `{\frx30\fry45}` block must re-emit
+    // verbatim through `ass::write`, and re-parsing the output must
+    // still produce the same typed AnimatedTag values. Parallel of
+    // the `round_trip_preserves_animated_tags` test that pins \frz.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\frx30\\fry45}}xy\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    for needle in ["\\frx30", "\\fry45", "xy"] {
+        assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
+    }
+    let t2 = ass::parse(out.as_bytes()).unwrap();
+    let anim2 = extract_cue_animation(&t2.cues[0]);
+    assert!(anim2.tags.iter().any(|t| matches!(t, AnimatedTag::Frx(v) if (*v - 30.0).abs() < 1e-6)));
+    assert!(anim2.tags.iter().any(|t| matches!(t, AnimatedTag::Fry(v) if (*v - 45.0).abs() < 1e-6)));
+}
+
+#[test]
+fn frx_fry_inside_t_round_trip() {
+    // `\t(0,1000,\frx90)` should round-trip the `\t` envelope as-is
+    // (the writer keeps animated tags via Segment::Raw).
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\t(0,1000,\\frx90\\fry-90)}}swivel\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    assert!(
+        out.contains("\\t(0,1000,\\frx90\\fry-90)"),
+        "writer output missing \\t envelope:\n{out}"
+    );
+}
+
 // Suppress an unused-import warning when only some helper types are used.
 #[allow(dead_code)]
 fn _ensure_cliprect_import_used(_: ClipRect) {}

@@ -23,6 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Test coverage for the `\frx` / `\fry` X- and Y-axis 3D-rotation
+  override tags from the Aegisub override-tag reference. The two tags
+  already had `AnimatedTag::Frx` / `Fry` variants, `parse_overrides()`
+  wiring, and `\t(...)` interpolation through the shared `apply_t`
+  machinery (alongside `\frz`); this round pins the static-extraction
+  path (`{\frx45}`, `{\fry-45}` per Aegisub's "opposite direction"
+  example), the combined two-axis path (`{\frx30\fry45}`), `\t`
+  interpolation on each axis individually and together
+  (`{\t(0,1000,\frx90\fry-90)}` swivel mid-cue at π/4 on each axis),
+  and the textual round-trip (parse → `ass::write` → re-parse keeps
+  both tags verbatim through `Segment::Raw` and re-extracts the same
+  typed values). The X / Y / Z `RenderState` rotation fields stay
+  independent — setting one does not leak into the others. No
+  behaviour change; tests only.
+
 - Typed extraction for the `\k` karaoke-timing family (`\k`, `\K`,
   `\kf`, `\ko`) from the Aegisub override-tag reference. Each marker
   surfaces as a new `AnimatedTag::Karaoke { kind, cs }` carrying the

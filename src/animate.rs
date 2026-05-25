@@ -1527,6 +1527,41 @@ mod tests {
     }
 
     #[test]
+    fn parses_frx_fry() {
+        // Per the Aegisub override-tag reference \frx / \fry are the X-
+        // and Y-axis members of the rotation family; they parse with the
+        // same numeric grammar as \frz. Negative angles are tolerated
+        // ("rotate ... in opposite direction").
+        let v = parse_block(r"\frx30\fry-45");
+        assert_eq!(v.len(), 2);
+        assert!(matches!(v[0], AnimatedTag::Frx(30.0)));
+        assert!(matches!(v[1], AnimatedTag::Fry(-45.0)));
+    }
+
+    #[test]
+    fn parses_t_with_frx_fry_inner() {
+        // \frx / \fry must be recognised inside a \t(...) envelope so
+        // the evaluator can lerp them like \frz.
+        let v = parse_block(r"\t(0,1000,\frx90\fry-90)");
+        assert_eq!(v.len(), 1);
+        match &v[0] {
+            AnimatedTag::T {
+                t1_ms,
+                t2_ms,
+                inner,
+                ..
+            } => {
+                assert_eq!(*t1_ms, Some(0));
+                assert_eq!(*t2_ms, Some(1000));
+                assert_eq!(inner.len(), 2);
+                assert!(matches!(inner[0], AnimatedTag::Frx(90.0)));
+                assert!(matches!(inner[1], AnimatedTag::Fry(-90.0)));
+            }
+            _ => panic!("expected T tag, got {:?}", v[0]),
+        }
+    }
+
+    #[test]
     fn parses_clip_rect() {
         let v = parse_block(r"\clip(10,20,100,200)");
         assert_eq!(
