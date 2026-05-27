@@ -547,8 +547,22 @@ fn handle_overrides(
         let name_lc = name.to_ascii_lowercase();
         let understood = match name_lc.as_str() {
             "b" => {
-                state.bold = parse_bool_flag(&param);
-                true
+                // Aegisub spec: `\b1` / `\b0` are the legacy on/off
+                // toggle; `\b<weight>` (100..900 in steps of 100, with
+                // 400 = normal and 700 = bold) lets the author pick a
+                // specific font weight. The base parser only handles
+                // the toggle into Segment::Bold; explicit weights
+                // pass through verbatim so the animate module's
+                // typed extraction (AnimatedTag::B) can recover the
+                // weight from Segment::Raw and the round-trip writer
+                // keeps `\b<weight>` byte-faithful.
+                let p = param.trim();
+                if p == "0" || p == "1" {
+                    state.bold = p == "1";
+                    true
+                } else {
+                    false
+                }
             }
             "i" => {
                 state.italic = parse_bool_flag(&param);

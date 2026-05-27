@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Typed extraction for four more override tags from the Aegisub /
+  Kotus tag reference: `\fn<name>` (font family), `\fe<id>` (Windows
+  font-encoding / charset ID for the glyph-mapping table),
+  `\b<weight>` (font weight, integer per the Aegisub spec —
+  `100..900` in steps of 100, with `400` = normal and `700` = bold;
+  the legacy `\b1` / `\b0` toggle maps to `Some(700)` / `Some(0)`),
+  and `\r[<style>]` (style reset; bare `\r` drops back to the line's
+  base style, the `\r<style>` form switches to a named definition
+  from the script's `[V4+ Styles]` block). New
+  `AnimatedTag::Fn(String)` / `Fe(u8)` / `B(u16)` /
+  `R(Option<String>)` variants surface alongside the existing
+  animated set. `RenderState` gains `font_name: Option<String>`,
+  `font_encoding: Option<u8>`, `bold_weight: Option<u16>`, and
+  `reset_to_style: Option<Option<String>>` (outer `Some` records that
+  a reset fired; inner `Option` is the bare-vs-named target). Applying
+  an `AnimatedTag::R` also wipes every other override field back to
+  identity per the Aegisub spec rule "cancels all style overrides in
+  effect, including animations, for all following text" — the
+  `reset_to_style` slot stays set so callers can spot the reset.
+  None of the four are animatable per spec (a typeface / weight /
+  encoding change cannot be interpolated meaningfully); inside
+  `\t(...)` they snap to the post-state at `t > t1`, mirroring the
+  existing `\q` / `\an` / `\a` behaviour. The new
+  `parse_one` prefix-split handles the spec's "no separator between
+  `\fn` and the family name" / "no separator between `\r` and the
+  style name" rule — `{\fnTimes New Roman}` and `{\rAlternate}`
+  parse correctly into their typed surfaces.
+
+### Fixed
+
+- The base parser's `\b` handler used to silently consume any
+  numeric argument as a boolean (anything non-zero became
+  `Segment::Bold`), throwing away the Aegisub `\b<weight>` form's
+  weight value on the round-trip. The handler now only consumes
+  exact `0` / `1` parameters into `Segment::Bold`; explicit weights
+  (`\b100`, `\b500`, `\b700`, `\b900`, …) fall through to the
+  passthrough block so the writer keeps them verbatim and the
+  `animate::extract_cue_animation` typed surface can recover them as
+  `AnimatedTag::B(weight)`.
+
+
 ## [0.0.7](https://github.com/OxideAV/oxideav-ass/compare/v0.0.6...v0.0.7) - 2026-05-24
 
 ### Other

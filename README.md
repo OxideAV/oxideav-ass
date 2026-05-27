@@ -101,15 +101,29 @@ What the parser understands and preserves on round-trip:
 - `[Events]` — `Format:`-aware; `Dialogue:` lines decode to
   `SubtitleCue` with start, end, style reference, and styled segments.
   `Comment:` events are dropped.
-- Override tags inside dialogue text — `\b`, `\i`, `\u`, `\s`, `\c`
-  and `\1c` (primary colour), `\2c` / `\3c` / `\4c` (secondary /
-  outline / shadow colour), `\alpha` and `\1a` / `\2a` / `\3a` /
-  `\4a` (per-component alpha — ASS convention: 0 = opaque, 255 =
-  transparent), `\fn`, `\fs`, `\pos(x,y)`, `\an`, `\k` / `\kf` /
-  `\ko` (karaoke timing markers), and `\r` (reset inline state).
-  Unknown tags survive parsing as opaque pass-through so round-trip
-  keeps them intact, even when mixed with tags the parser does
-  interpret.
+- Override tags inside dialogue text — `\b` (with both the `\b1`/`\b0`
+  legacy toggle and the `\b<weight>` 100..900 integer form), `\i`,
+  `\u`, `\s`, `\c` and `\1c` (primary colour), `\2c` / `\3c` / `\4c`
+  (secondary / outline / shadow colour), `\alpha` and `\1a` / `\2a` /
+  `\3a` / `\4a` (per-component alpha — ASS convention: 0 = opaque,
+  255 = transparent), `\fn`, `\fe` (Windows charset ID for the
+  glyph-mapping table), `\fs`, `\pos(x,y)`, `\an`, `\k` / `\kf` /
+  `\ko` (karaoke timing markers), and `\r` / `\r<style>` (reset
+  inline state; the named form switches the base style to a named
+  definition from `[V4+ Styles]`). Unknown tags survive parsing as
+  opaque pass-through so round-trip keeps them intact, even when
+  mixed with tags the parser does interpret.
+- **Typed face-state extraction** — `\fn<name>` (font family),
+  `\fe<id>` (Windows charset ID, e.g. `128` = Shift-JIS, `134` =
+  GB2312, `136` = BIG5), `\b<weight>` (font weight 100..900, with
+  `\b1`/`\b0` mapping to 700/0), and `\r[<style>]` (reset to the
+  line's base style or a named style). All four surface through the
+  `animate` module — call `evaluate_at(t_ms, dur_ms)` on the
+  resulting `CueAnimation` and read `RenderState::font_name`,
+  `font_encoding`, `bold_weight`, and `reset_to_style`. None are
+  animatable per spec; inside `\t(...)` they snap to the post-state
+  at `t > t1`. The full text round-trip continues to emit each tag
+  verbatim through `Segment::Raw`.
 - **Animated tags** — `\fad(t1,t2)`, `\fade(7-arg)`, `\pos(x,y)`
   (static line position; non-moving counterpart of `\move`, writes the
   same `translate` field), `\move(...)`,

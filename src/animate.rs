@@ -76,15 +76,36 @@
 //!   is hidden inside the rectangle. Vector-drawing form is also
 //!   accepted and stored verbatim in [`RenderState::iclip_drawing`].
 //! * `\fscx(percent)` / `\fscy(percent)` — non-uniform scale.
+//! * `\fn<name>` — font family override for the following text. The
+//!   parameter is read literally up to the next `\` or end of block
+//!   (per the Aegisub spec "no space between `\fn` and the font
+//!   name"). Surfaces on [`RenderState::font_name`]. Not animatable;
+//!   inside `\t(...)` the new face snaps in at `t > t1`.
+//! * `\fe<id>` — Windows font-encoding (charset) ID for the glyph-
+//!   mapping table. Common slots: `0` ANSI, `128` Shift-JIS, `134`
+//!   GB2312, `136` BIG5. Surfaces on [`RenderState::font_encoding`].
+//!   Not animatable.
+//! * `\b<weight>` — bold weight override, integer per the Aegisub
+//!   spec (`100..900`, `400` = normal, `700` = bold). The legacy
+//!   shortcut `\b1` surfaces as `Some(700)`, `\b0` as `Some(0)`.
+//!   Surfaces on [`RenderState::bold_weight`]. Not animatable.
+//! * `\r[<style>]` — reset all override state for the following text;
+//!   the optional name argument switches the base style to a named
+//!   definition from `[V4+ Styles]`. Surfaces on
+//!   [`RenderState::reset_to_style`] (`Some(None)` for bare `\r`,
+//!   `Some(Some(name))` for `\r<name>`); applying a `\r` also clears
+//!   every other override field per the spec's "cancels all style
+//!   overrides in effect" rule.
 //! * `\t(t1, t2, [accel,] tags)` — interpolate the inner tags over
 //!   `[t1, t2]` within the cue. Inner tags supported in this round:
 //!   `\fscx`, `\fscy`, `\frz`, `\c` / `\1c` / `\2c` / `\3c` / `\4c`,
 //!   `\alpha` / `\1a` / `\2a` / `\3a` / `\4a`, `\fs`, `\blur`,
 //!   `\bord`, `\xbord`, `\ybord`, `\shad`, `\xshad`, `\yshad`, `\fax`,
 //!   `\fay`, `\fsp`. Other inner tags are stored verbatim and applied
-//!   as a static override for `t >= t1`. `\q` is a static (non-
-//!   animated) line-level setting per spec; it is parsed at the cue
-//!   level and ignored inside `\t(...)`.
+//!   as a static override for `t >= t1`. `\q`, `\an` / `\a`, `\fn`,
+//!   `\fe`, `\b`, and `\r` are static (non-animated) settings per
+//!   spec; they snap to the post-state at `t > t1` rather than
+//!   interpolating.
 //!
 //! Times in `\fad`, `\move`, `\t` are milliseconds *from the cue
 //! start*. The ASS spec uses "ms from cue start" as the canonical
@@ -304,6 +325,47 @@ pub enum AnimatedTag {
     /// [`RenderState::alignment`]'s 1..=9 surface. Unrecognised codes
     /// are dropped.
     A(u8),
+    /// `\fn<name>` — font family override for the following text. The
+    /// Aegisub spec is explicit that no space sits between `\fn` and
+    /// the name, and that surrounding parentheses are not part of the
+    /// value, so the parameter is read verbatim up to the next `\` or
+    /// the end of the override block. Empty names drop the tag (the
+    /// renderer keeps the style's `Fontname`). Not animatable per
+    /// spec — a typeface change cannot be interpolated; inside
+    /// `\t(...)` the new face snaps in at `t > t1`, mirroring `\q`.
+    Fn(String),
+    /// `\fe<id>` — Windows font-encoding (charset) ID to use for the
+    /// glyph-mapping table. Per the Aegisub spec, common values are
+    /// `0` ANSI / `1` Default / `2` Symbol / `128` Shift-JIS / `134`
+    /// GB2312 / `136` BIG5 / `162` Turkish / `163` Vietnamese / `177`
+    /// Hebrew / `178` Arabic. The full Win32 charset numeric range is
+    /// `0..=255`; values outside drop the override. Not animatable per
+    /// spec — the encoding determines the glyph-mapping table and
+    /// cannot be interpolated; inside `\t(...)` it snaps at `t > t1`.
+    Fe(u8),
+    /// `\r[<style>]` — reset all override state for the following
+    /// text. The bare `\r` form drops back to the line's base style;
+    /// the `\r<style>` form switches the base style to the named
+    /// definition from the script `[V4+ Styles]` block (the typed
+    /// surface here only carries the name — looking it up against the
+    /// track's style table is the renderer's job). The parser strips
+    /// surrounding whitespace from the name; an empty name decays to
+    /// the bare-`\r` variant.
+    R(Option<String>),
+    /// `\b<weight>` — bold weight as an integer (per the Aegisub
+    /// spec: `100..900` in steps of 100, where `400` = normal and
+    /// `700` = bold). The legacy `\b1` / `\b0` toggles surface as
+    /// `Some(700)` / `Some(0)` so the base parser's boolean is still
+    /// honoured: any non-zero value renders bold, weight `0` (or
+    /// anything below `100` rounded down) drops back to "not bold".
+    /// The full integer weight is exposed on
+    /// [`RenderState::bold_weight`] for renderers that pick a font
+    /// face by weight; values outside the spec range are still
+    /// surfaced verbatim so downstream code can decide its own
+    /// fallback. Not animatable per spec — a typeface weight change
+    /// cannot be interpolated meaningfully; inside `\t(...)` the
+    /// post-state value snaps in at `t > t1`.
+    B(u16),
     /// `\k` / `\K` / `\kf` / `\ko` — a karaoke syllable timing marker.
     /// `cs` is the syllable's duration in **centiseconds** (the unit the
     /// `\k` family uses; `100` = one second), and `kind` records which
@@ -467,6 +529,33 @@ pub struct RenderState {
     /// to decide which glyph corner sits on the `translate` point.
     /// Static, not animatable.
     pub alignment: Option<u8>,
+    /// `\fn<name>` font family override for this segment, if set.
+    /// `None` = fall back to the style's `Fontname`. Empty / whitespace-
+    /// only names are dropped by the parser.
+    pub font_name: Option<String>,
+    /// `\fe<id>` Windows charset ID for the glyph-mapping table, if
+    /// set. `None` = fall back to the style's `Encoding`. Valid range
+    /// `0..=255` per the Win32 charset enum; values outside drop the
+    /// override.
+    pub font_encoding: Option<u8>,
+    /// `\b<weight>` font-weight override, if set. `None` = fall back
+    /// to the style's `Bold` field. `0` = explicitly not-bold; the
+    /// Aegisub spec's named slots are `100`/`300`/`500`/`700`/`900`;
+    /// `\b1` shortcut surfaces as `Some(700)`. Renderers pick the
+    /// closest available face weight.
+    pub bold_weight: Option<u16>,
+    /// `\r[<style>]` style-reset target, if a `\r` was seen on this
+    /// segment. `Some(None)` means a bare `\r` (reset to the line's
+    /// base style); `Some(Some(name))` means `\r<name>` (reset to the
+    /// named style from the script's `[V4+ Styles]` block). The
+    /// renderer is responsible for looking the name up against the
+    /// track's style table — the typed surface here only carries the
+    /// requested target. Applying a `\r` also clears every other
+    /// override field on this state (back to identity) per the spec
+    /// "cancels all style overrides in effect" rule; the
+    /// `reset_to_style` slot stays set so callers can tell a reset
+    /// happened.
+    pub reset_to_style: Option<Option<String>>,
 }
 
 impl RenderState {
@@ -502,6 +591,10 @@ impl RenderState {
             letter_spacing: None,
             wrap_style: None,
             alignment: None,
+            font_name: None,
+            font_encoding: None,
+            bold_weight: None,
+            reset_to_style: None,
         }
     }
 }
@@ -742,6 +835,30 @@ fn apply_tag(st: &mut RenderState, tag: &AnimatedTag, t_ms: i32, dur_ms: i32) {
             // syllable is active and how far its highlight has advanced.
             // Nothing to apply to the affine / colour / alpha state here.
         }
+        AnimatedTag::Fn(name) => {
+            // Whitespace-only names already dropped by `parse_one`, so
+            // anything reaching the evaluator is a renderable family
+            // request. Clone into the state — the renderer borrows it.
+            st.font_name = Some(name.clone());
+        }
+        AnimatedTag::Fe(id) => {
+            // Win32 charset IDs are documented 0..=255; the parser
+            // already clamped to a u8 so the slot is always valid.
+            st.font_encoding = Some(*id);
+        }
+        AnimatedTag::B(weight) => {
+            st.bold_weight = Some(*weight);
+        }
+        AnimatedTag::R(name) => {
+            // Aegisub spec: "cancels all style overrides in effect,
+            // including animations, for all following text." Reset
+            // everything to identity, then record the target so the
+            // renderer can either drop back to the line's style (None)
+            // or look the named style up against the script's
+            // `[V4+ Styles]` block (Some(name)).
+            *st = RenderState::identity();
+            st.reset_to_style = Some(name.clone());
+        }
         AnimatedTag::T {
             t1_ms,
             t2_ms,
@@ -880,6 +997,42 @@ fn apply_t(
             post.alignment
         } else {
             pre.alignment
+        };
+    }
+    // \fn / \fe / \b are typeface-changing tags — a font face cannot
+    // be interpolated, so they snap at t > t1 like \q / \an. Per the
+    // Aegisub spec these tags are explicitly listed under the
+    // non-animatable group in the override-tag reference.
+    if post.font_name != pre.font_name {
+        st.font_name = if k > 0.0 {
+            post.font_name.clone()
+        } else {
+            pre.font_name.clone()
+        };
+    }
+    if post.font_encoding != pre.font_encoding {
+        st.font_encoding = if k > 0.0 {
+            post.font_encoding
+        } else {
+            pre.font_encoding
+        };
+    }
+    if post.bold_weight != pre.bold_weight {
+        st.bold_weight = if k > 0.0 {
+            post.bold_weight
+        } else {
+            pre.bold_weight
+        };
+    }
+    // \r is special: it resets the entire state. Snap the reset target
+    // on the same k > 0 boundary; when the reset fires, every other
+    // field is already at identity (apply_tag wiped them in the post
+    // pass) so the surrounding interpolation falls through cleanly.
+    if post.reset_to_style != pre.reset_to_style {
+        st.reset_to_style = if k > 0.0 {
+            post.reset_to_style.clone()
+        } else {
+            pre.reset_to_style.clone()
         };
     }
 }
@@ -1128,6 +1281,39 @@ fn read_param(s: &str) -> (String, usize) {
 }
 
 fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag> {
+    // `\fn<name>` and `\r[<name>]` have no separator between the tag
+    // and the inline name — the tokenizer greedily eats every
+    // alphabetic byte into the tag-name slot, so they arrive here as
+    // `name = "fnArial"` / `name = "rAlternate"` with `param = ""`.
+    // Split the inline name back out before matching by short prefix.
+    if name_lc.starts_with("fn") && name_lc.len() > 2 {
+        // `\fnArial` → name = "fnArial", param = ""
+        // `\fnTimes New Roman` → name = "fnTimes", param = " New Roman"
+        //   (the tokenizer stops the name run at the first non-
+        //   alphabetic, then read_param's bare-param mode picks up
+        //   the rest until the next `\`).
+        let head = &name_orig[2..];
+        let full = if param.is_empty() {
+            head.trim().to_string()
+        } else {
+            format!("{}{}", head, param).trim().to_string()
+        };
+        if full.is_empty() {
+            return None;
+        }
+        return Some(AnimatedTag::Fn(full));
+    }
+    if name_lc.starts_with('r') && name_lc.len() > 1 && param.is_empty() {
+        // Anything starting with `r` and a body — `\rAlt`, `\rDefault`
+        // etc. — is the named-style reset. The bare `\r` matches the
+        // "r" arm below (len == 1).
+        let style = &name_orig[1..];
+        let style = style.trim();
+        if style.is_empty() {
+            return Some(AnimatedTag::R(None));
+        }
+        return Some(AnimatedTag::R(Some(style.to_string())));
+    }
     match name_lc {
         "fad" => {
             let nums = parse_int_list(param);
@@ -1285,6 +1471,53 @@ fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag>
         "4a" => parse_alpha_byte(param).map(AnimatedTag::Alpha4),
         "clip" => parse_clip(param, false),
         "iclip" => parse_clip(param, true),
+        "fe" => {
+            // `\fe<id>` — Win32 charset ID. Spec range 0..=255; the
+            // doc lists `0`/`1`/`2`/`128`/`129`/`130`/`134`/`136`/
+            // `162`/`163`/`177`/`178` as the common slots.
+            let n: i32 = param.trim().parse().ok()?;
+            if (0..=255).contains(&n) {
+                Some(AnimatedTag::Fe(n as u8))
+            } else {
+                None
+            }
+        }
+        "b" => {
+            // `\b<weight>` — bold weight. Per Aegisub spec, valid
+            // weights are 100..900 in steps of 100, with the legacy
+            // `\b1` / `\b0` shortcuts mapping to "bold" / "not bold".
+            // Negative or oversized values are dropped. Empty
+            // parameters drop the tag (the renderer keeps the
+            // style's Bold field).
+            let raw = param.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let n: i32 = raw.parse().ok()?;
+            let weight = match n {
+                0 => 0,
+                1 => 700,
+                w if (100..=900).contains(&w) => w as u16,
+                _ => return None,
+            };
+            Some(AnimatedTag::B(weight))
+        }
+        "r" => {
+            // `\r[<style>]` — reset all style overrides; the optional
+            // name argument switches the line's base style to a named
+            // definition. Per spec, the bare form (`\r`) drops back
+            // to the line's own style; the named form (`\rAlternate`)
+            // switches to the style called "Alternate" in the script
+            // `[V4+ Styles]` block. The renderer is responsible for
+            // looking the name up; the typed surface carries the
+            // raw text.
+            let name = param.trim();
+            if name.is_empty() {
+                Some(AnimatedTag::R(None))
+            } else {
+                Some(AnimatedTag::R(Some(name.to_string())))
+            }
+        }
         "t" => parse_t(param),
         _ => None,
     }
@@ -2912,5 +3145,305 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\k50}la{\\kf30}la\n";
         assert_eq!(spans[0].end_ms, 500);
         assert_eq!(spans[1].start_ms, 500);
         assert_eq!(spans[1].end_ms, 800);
+    }
+
+    // --- \fn / \fe / \b / \r typed extraction ---
+
+    #[test]
+    fn parses_fn_font_family() {
+        let mut v = Vec::new();
+        parse_overrides("\\fnArial", &mut v);
+        assert_eq!(v, vec![AnimatedTag::Fn("Arial".to_string())]);
+    }
+
+    #[test]
+    fn parses_fn_font_family_with_spaces_in_name() {
+        // The Aegisub spec example: `\fnTimes New Roman`. The name
+        // runs verbatim until the next `\` or the end of the block,
+        // so spaces inside the family name survive.
+        let mut v = Vec::new();
+        parse_overrides("\\fnTimes New Roman", &mut v);
+        assert_eq!(v, vec![AnimatedTag::Fn("Times New Roman".to_string())]);
+    }
+
+    #[test]
+    fn parses_fn_stops_at_next_backslash() {
+        // Mixed override block: `\fn` reads up to the next `\`, the
+        // following tag is parsed independently.
+        let mut v = Vec::new();
+        parse_overrides("\\fnArial\\fs24", &mut v);
+        assert_eq!(
+            v,
+            vec![AnimatedTag::Fn("Arial".to_string()), AnimatedTag::Fs(24.0)]
+        );
+    }
+
+    #[test]
+    fn empty_fn_is_dropped() {
+        // `\fn` with no name keeps the style's Fontname (per spec).
+        let mut v = Vec::new();
+        parse_overrides("\\fn", &mut v);
+        assert!(v.is_empty());
+        // Whitespace-only param is the same as empty.
+        let mut v = Vec::new();
+        parse_overrides("\\fn   \\fs10", &mut v);
+        assert_eq!(v, vec![AnimatedTag::Fs(10.0)]);
+    }
+
+    #[test]
+    fn fn_writes_render_state_font_name() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\fnArial}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st = anim.evaluate_at(500, 1000);
+        assert_eq!(st.font_name.as_deref(), Some("Arial"));
+    }
+
+    #[test]
+    fn parses_fe_charset_id() {
+        // The Aegisub doc lists 128 (Shift-JIS) as a common value.
+        let mut v = Vec::new();
+        parse_overrides("\\fe128", &mut v);
+        assert_eq!(v, vec![AnimatedTag::Fe(128)]);
+        let mut v = Vec::new();
+        parse_overrides("\\fe0", &mut v);
+        assert_eq!(v, vec![AnimatedTag::Fe(0)]);
+    }
+
+    #[test]
+    fn fe_out_of_range_is_dropped() {
+        // Win32 charset IDs sit in 0..=255; anything outside is the
+        // parser's "drop the override" path.
+        let mut v = Vec::new();
+        parse_overrides("\\fe-1", &mut v);
+        assert!(v.is_empty());
+        let mut v = Vec::new();
+        parse_overrides("\\fe999", &mut v);
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn fe_writes_render_state_encoding() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\fe134}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st = anim.evaluate_at(500, 1000);
+        assert_eq!(st.font_encoding, Some(134));
+    }
+
+    #[test]
+    fn parses_b_weight_legacy_toggle() {
+        // \b1 = bold (= weight 700), \b0 = not bold (= weight 0).
+        let mut v = Vec::new();
+        parse_overrides("\\b1", &mut v);
+        assert_eq!(v, vec![AnimatedTag::B(700)]);
+        let mut v = Vec::new();
+        parse_overrides("\\b0", &mut v);
+        assert_eq!(v, vec![AnimatedTag::B(0)]);
+    }
+
+    #[test]
+    fn parses_b_weight_explicit() {
+        // Aegisub example: `{\b100}{\b300}{\b500}{\b700}{\b900}`.
+        let mut v = Vec::new();
+        parse_overrides("\\b500", &mut v);
+        assert_eq!(v, vec![AnimatedTag::B(500)]);
+        let mut v = Vec::new();
+        parse_overrides("\\b900", &mut v);
+        assert_eq!(v, vec![AnimatedTag::B(900)]);
+    }
+
+    #[test]
+    fn b_weight_out_of_range_is_dropped() {
+        // 50 is below 100, 1000 is above 900 — both outside the spec
+        // range; `\b2`/`\b3` etc. are also rejected (the legacy
+        // shortcut only recognises 0/1).
+        let mut v = Vec::new();
+        parse_overrides("\\b50", &mut v);
+        assert!(v.is_empty());
+        let mut v = Vec::new();
+        parse_overrides("\\b1000", &mut v);
+        assert!(v.is_empty());
+        let mut v = Vec::new();
+        parse_overrides("\\b2", &mut v);
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn b_writes_render_state_bold_weight() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\b700}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st = anim.evaluate_at(500, 1000);
+        assert_eq!(st.bold_weight, Some(700));
+    }
+
+    #[test]
+    fn parses_r_bare_reset() {
+        // Bare `\r` resets to the line's base style.
+        let mut v = Vec::new();
+        parse_overrides("\\r", &mut v);
+        assert_eq!(v, vec![AnimatedTag::R(None)]);
+    }
+
+    #[test]
+    fn parses_r_named_reset() {
+        // `\rAlternate` resets to the named style.
+        let mut v = Vec::new();
+        parse_overrides("\\rAlternate", &mut v);
+        assert_eq!(v, vec![AnimatedTag::R(Some("Alternate".to_string()))]);
+    }
+
+    #[test]
+    fn r_resets_render_state_to_identity() {
+        // Aegisub spec: "cancels all style overrides in effect,
+        // including animations, for all following text."
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            // Set frz + blur + color, THEN reset.
+            segments: vec![Segment::Raw("{\\frz45\\blur3\\c&H0000FF&\\r}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st = anim.evaluate_at(500, 1000);
+        // Every transform-state field is back at identity:
+        assert_eq!(st.rotate_radians, 0.0);
+        assert_eq!(st.blur_sigma, 0.0);
+        assert_eq!(st.primary_color, None);
+        // ... but the reset target survives so callers can spot it.
+        assert_eq!(st.reset_to_style, Some(None));
+    }
+
+    #[test]
+    fn r_named_resets_and_records_name() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\frz30\\rAlt}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st = anim.evaluate_at(500, 1000);
+        assert_eq!(st.rotate_radians, 0.0);
+        assert_eq!(st.reset_to_style, Some(Some("Alt".to_string())));
+    }
+
+    #[test]
+    fn fn_snaps_inside_t_at_post_state() {
+        // \fn isn't animatable — inside \t it snaps in at t > t1
+        // rather than interpolating.
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\fnArial\\t(0,500,\\fnTimes)}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        // At t = 0 we're still on the pre-transition value (k = 0).
+        let st0 = anim.evaluate_at(0, 1000);
+        assert_eq!(st0.font_name.as_deref(), Some("Arial"));
+        // Mid-way and after t1 we're on the post value.
+        let st1 = anim.evaluate_at(250, 1000);
+        assert_eq!(st1.font_name.as_deref(), Some("Times"));
+        let st2 = anim.evaluate_at(600, 1000);
+        assert_eq!(st2.font_name.as_deref(), Some("Times"));
+    }
+
+    #[test]
+    fn b_snaps_inside_t_at_post_state() {
+        // Same non-animatable snap behaviour for the bold weight.
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\b100\\t(0,500,\\b900)}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st0 = anim.evaluate_at(0, 1000);
+        assert_eq!(st0.bold_weight, Some(100));
+        let st1 = anim.evaluate_at(250, 1000);
+        assert_eq!(st1.bold_weight, Some(900));
+    }
+
+    #[test]
+    fn fe_snaps_inside_t_at_post_state() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\fe0\\t(0,500,\\fe128)}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st0 = anim.evaluate_at(0, 1000);
+        assert_eq!(st0.font_encoding, Some(0));
+        let st1 = anim.evaluate_at(250, 1000);
+        assert_eq!(st1.font_encoding, Some(128));
+    }
+
+    #[test]
+    fn round_trip_keeps_fn_fe_b_r_verbatim() {
+        // The base parser stores all four tag families in Segment::Raw
+        // for the text round-trip (it only types-out \b / \r via its
+        // Bold / state-reset arms; the rest reach the animate path
+        // through Raw blocks). Confirm a parse → write cycle still
+        // includes every tag we care about.
+        let src = "\
+[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[V4+ Styles]\n\
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, Alignment, MarginL, MarginR, MarginV, Outline, Shadow\n\
+Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,2,10,10,10,1,0\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\fnArial\\fe128\\b500\\rAlt}hi\n";
+        let t = crate::parse(src.as_bytes()).unwrap();
+        let bytes = crate::write(&t);
+        let out = String::from_utf8(bytes).unwrap();
+        // \fn / \fe / \b500 / \rAlt all survive verbatim — they were
+        // stashed in the Raw passthrough block; \b500 (non-toggle)
+        // doesn't decode to Segment::Bold because that arm only
+        // honours bool flags.
+        assert!(out.contains("\\fnArial"), "missing \\fn in: {out}");
+        assert!(out.contains("\\fe128"), "missing \\fe in: {out}");
+        assert!(out.contains("\\b500"), "missing \\b500 in: {out}");
+        assert!(out.contains("\\rAlt"), "missing \\rAlt in: {out}");
+        // Re-parse the writer's output and confirm the typed surface
+        // still recovers each tag. The override block runs in the
+        // order `{\fnArial\fe128\b500\rAlt}`, so `\r` is the LAST
+        // tag — per the Aegisub spec it "cancels all style overrides
+        // in effect" for the following text. The font / encoding /
+        // weight overrides set immediately before it therefore
+        // collapse back to "no override", and only the reset target
+        // survives on the typed state.
+        let t2 = crate::parse(out.as_bytes()).unwrap();
+        let anim = extract_cue_animation(&t2.cues[0]);
+        let st = anim.evaluate_at(500, 2000);
+        assert_eq!(st.font_name, None);
+        assert_eq!(st.font_encoding, None);
+        assert_eq!(st.bold_weight, None);
+        assert_eq!(st.reset_to_style, Some(Some("Alt".to_string())));
     }
 }
