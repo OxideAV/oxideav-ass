@@ -146,7 +146,9 @@ What the parser understands and preserves on round-trip:
   `\an<1..=9>` (numpad alignment) plus the legacy `\a<pos>` form
   (converted to the same numpad surface), `\pbo<y>` (drawing baseline
   Y-offset; positive = down, negative = up, applies only to `\p`
-  drawing blocks), and `\t(...)` wrapping any of the animatable ones. These are exposed via the `animate` module:
+  drawing blocks), `\p<scale>` (drawing-mode toggle; `\p0` = text,
+  `\p1` = drawing at native coordinates, `\p<N>` for `N >= 2` = drawing
+  with sub-pixel scaling at `2^(N-1)`; static per spec), and `\t(...)` wrapping any of the animatable ones. These are exposed via the `animate` module:
   call `oxideav_ass::extract_cue_animation(&cue)` to get a typed
   `CueAnimation`, then `evaluate_at(t_ms, dur_ms)` to sample the
   resulting `RenderState` (alpha multiplier, `Transform2D`, optional
@@ -156,7 +158,7 @@ What the parser understands and preserves on round-trip:
   style, line alignment as a numpad code, primary / secondary /
   outline / shadow colours, per-channel alphas independent of the
   `\fad` envelope, pivot, per-axis rotations, drawing baseline Y-
-  offset) at any timestamp. The
+  offset, drawing-mode scale) at any timestamp. The
   textual round-trip continues to emit the original tags verbatim.
 - **Karaoke timing** — the `\k` family (`\k` instant fill / `\kf` and
   the identical uppercase `\K` left-to-right sweep / `\ko` outline
@@ -211,10 +213,15 @@ Out of scope for this crate:
 - Free-form `\p` drawing-mode rendering (the rasterisation of
   drawing blocks as decorative shapes) is parser-only — use
   `parse_drawing` to lift the path into your own scene. The
-  baseline-offset companion tag `\pbo<y>` does surface on
-  `RenderState::drawing_baseline_offset`; renderers should translate
-  their parsed path by `(0, drawing_baseline_offset.unwrap_or(0))`
-  before rasterising.
+  `\p<scale>` toggle itself does surface on
+  `RenderState::drawing_scale` so renderers know when to treat a
+  text run as drawing commands (`Some(0)` = explicitly text mode;
+  `Some(N)` for `N >= 1` = drawing mode with sub-pixel scale exponent
+  `N - 1`, matching the `scale_exp` arg `parse_drawing` already
+  accepts), and the baseline-offset companion tag `\pbo<y>` surfaces
+  on `RenderState::drawing_baseline_offset`; renderers should
+  translate their parsed path by
+  `(0, drawing_baseline_offset.unwrap_or(0))` before rasterising.
 
 ### Codec / container IDs
 

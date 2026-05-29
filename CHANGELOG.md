@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed extraction for the `\p<scale>` drawing-mode toggle override
+  tag from the Aegisub override-tag reference. `\p<scale>` is the
+  switch between text rendering and ASS vector drawing-mode: `\p0`
+  disables drawing mode (text after the override block renders as
+  glyphs), `\p1` enables drawing mode with native pixel coordinates,
+  and `\p<N>` for `N >= 2` enables drawing mode with sub-pixel
+  coordinates scaled by `2^(N-1)` per the Aegisub spec's "interpreted
+  as the scale, in `2^(value-1)` mode" rule. Surfaces as a new
+  `AnimatedTag::P(u8)` variant alongside the existing animated set,
+  with `RenderState::drawing_scale: Option<u8>` exposing the resolved
+  value (`None` = no override — renderer assumes text mode;
+  `Some(0)` = drawing mode explicitly disabled by `\p0`; `Some(N)`
+  for `N >= 1` = drawing mode at scale exponent `N - 1`). The raw
+  `N` argument surfaces verbatim so consumers using
+  `oxideav_ass::parse_drawing(s, scale_exp)` can pass
+  `scale_exp = N - 1` straight from the typed slot. `\p` is non-
+  animatable per spec — a binary drawing-vs-text mode switch has no
+  meaningful in-between value — so inside `\t(...)` it snaps to the
+  post-state at `t > t1`, mirroring the existing `\q` / `\an` /
+  `\fn` handling. The parser rejects negative arguments and values
+  above the `u8` ceiling (any sensible authoring stays well under
+  `255` since the scale grows exponentially); rejected values still
+  survive verbatim through `Segment::Raw` so the round-trip writer
+  re-emits the original bytes. Round-tripping `{\\p2\\pbo10}m 0 0`
+  re-emits both tags through the passthrough block and the typed
+  surface still recovers both on the second parse. Closes the
+  long-standing "renderer doesn't know when drawing mode begins or
+  ends" gap left after `\pbo` (r182) lifted the companion baseline
+  offset into the typed surface.
+
 - Typed extraction for the `\i<flag>` / `\u<flag>` / `\s<flag>`
   italic / underline / strikeout face-flag toggles from the Aegisub
   override-tag reference. Each surfaces as a new

@@ -116,6 +116,15 @@
 //!   [`RenderState::drawing_baseline_offset`]. Affects only drawing-
 //!   mode coordinates; glyph text is unchanged. Animatable inside
 //!   `\t(...)` (ramps linearly, round-clamped to `i32` per sample).
+//! * `\p<scale>` — drawing-mode toggle. `\p0` disables drawing mode
+//!   (text after the override block renders as glyphs); `\p1` enables
+//!   drawing mode with one-pixel coordinates; `\p<N>` for `N >= 2`
+//!   enables drawing mode with sub-pixel coordinates scaled by
+//!   `2^(N-1)` per the Aegisub spec. Surfaces on
+//!   [`RenderState::drawing_scale`]. Static (not animatable) — a
+//!   binary drawing-vs-text mode switch has no meaningful in-between
+//!   value; inside `\t(...)` the post-state value snaps in at
+//!   `t > t1`, mirroring `\q` / `\an` / `\fn`.
 //! * `\t(t1, t2, [accel,] tags)` — interpolate the inner tags over
 //!   `[t1, t2]` within the cue. Inner tags supported in this round:
 //!   `\fscx`, `\fscy`, `\frz`, `\c` / `\1c` / `\2c` / `\3c` / `\4c`,
@@ -123,9 +132,9 @@
 //!   `\bord`, `\xbord`, `\ybord`, `\shad`, `\xshad`, `\yshad`, `\fax`,
 //!   `\fay`, `\fsp`, `\pbo`. Other inner tags are stored verbatim and
 //!   applied as a static override for `t >= t1`. `\q`, `\an` / `\a`,
-//!   `\fn`, `\fe`, `\b`, `\i` / `\u` / `\s`, and `\r` are static
-//!   (non-animated) settings per spec; they snap to the post-state at
-//!   `t > t1` rather than interpolating.
+//!   `\fn`, `\fe`, `\b`, `\i` / `\u` / `\s`, `\r`, and `\p` are
+//!   static (non-animated) settings per spec; they snap to the
+//!   post-state at `t > t1` rather than interpolating.
 //!
 //! Times in `\fad`, `\move`, `\t` are milliseconds *from the cue
 //! start*. The ASS spec uses "ms from cue start" as the canonical
@@ -429,6 +438,24 @@ pub enum AnimatedTag {
     /// state values and is round-clamped back into `i32` at each
     /// sample, mirroring the `\be` strength handling.
     Pbo(i32),
+    /// `\p<scale>` — drawing-mode toggle. The Aegisub spec defines
+    /// this tag as a switch between text rendering and vector drawing:
+    /// `\p0` disables drawing mode (text after the override block
+    /// renders as glyphs), `\p1` enables drawing mode at native
+    /// coordinates, and `\p<N>` for `N >= 2` enables drawing mode with
+    /// sub-pixel coordinates scaled by `2^(N-1)` (so `\p2` divides the
+    /// emitted vector coordinates by 2, `\p3` by 4, and so on, per the
+    /// spec's "interpreted as the scale, in 2^(value-1) mode" rule).
+    /// The carried `u8` is the raw `<N>` argument from the tag; the
+    /// renderer is responsible for translating it into a coordinate
+    /// divisor when calling [`crate::drawing::parse_drawing`]. Surfaces
+    /// on [`RenderState::drawing_scale`]. Static (not animatable per
+    /// spec) — a binary drawing-vs-text switch has no meaningful
+    /// in-between value; inside `\t(...)` the post-state value snaps
+    /// in at `t > t1`. Negative arguments drop the tag at the parser
+    /// (the renderer keeps the surrounding state); arguments above the
+    /// `u8` ceiling are also dropped.
+    P(u8),
     /// `\t([t1,t2,[accel,]] inner_tags)` — interpolate the inner tags
     /// over `[t1, t2]`. When `t1`/`t2` are omitted ASS treats them as
     /// `[0, cue_duration]`. `accel` defaults to 1.0 (linear).
@@ -631,6 +658,18 @@ pub struct RenderState {
     /// rasterising. Animatable inside `\t(...)`; round-clamped back to
     /// `i32` at each sample.
     pub drawing_baseline_offset: Option<i32>,
+    /// `\p<scale>` drawing-mode toggle, if set. `None` = no override
+    /// (renderer assumes text mode); `Some(0)` = drawing mode
+    /// explicitly disabled by `\p0`; `Some(N)` for `N >= 1` = drawing
+    /// mode enabled with the raw `N` argument from the tag. Per the
+    /// Aegisub spec, `Some(1)` means native pixel coordinates and
+    /// `Some(N)` for `N >= 2` means coordinates are divided by
+    /// `2^(N-1)` for sub-pixel accuracy when feeding
+    /// [`crate::drawing::parse_drawing`]. Affects only how the
+    /// renderer interprets the following text run (as glyphs vs.
+    /// drawing commands); glyph layout is unchanged. Static, not
+    /// animatable per spec.
+    pub drawing_scale: Option<u8>,
 }
 
 impl RenderState {
@@ -674,6 +713,7 @@ impl RenderState {
             underline: None,
             strikeout: None,
             drawing_baseline_offset: None,
+            drawing_scale: None,
         }
     }
 }
@@ -953,6 +993,15 @@ fn apply_tag(st: &mut RenderState, tag: &AnimatedTag, t_ms: i32, dur_ms: i32) {
             // does not affect glyph text.
             st.drawing_baseline_offset = Some(*y);
         }
+        AnimatedTag::P(scale) => {
+            // Drawing-mode toggle per Aegisub spec. `0` disables
+            // drawing mode; `1` enables at native coordinates; `N>=2`
+            // enables with sub-pixel coordinates scaled by 2^(N-1).
+            // Last-writer-wins, matching the rest of the module's
+            // static-override model — so a later `\p0` after `\p1` in
+            // the same cue flips the mode back to text.
+            st.drawing_scale = Some(*scale);
+        }
         AnimatedTag::T {
             t1_ms,
             t2_ms,
@@ -1160,6 +1209,17 @@ fn apply_t(
             post.reset_to_style.clone()
         } else {
             pre.reset_to_style.clone()
+        };
+    }
+    // `\p<scale>` is a binary drawing-vs-text mode switch; the Aegisub
+    // spec does not assign meaning to "half-way through transitioning
+    // into drawing mode", so the post-state value snaps in at `t > t1`
+    // (k > 0) just like `\q` / `\an` / `\fn`.
+    if post.drawing_scale != pre.drawing_scale {
+        st.drawing_scale = if k > 0.0 {
+            post.drawing_scale
+        } else {
+            pre.drawing_scale
         };
     }
 }
@@ -1563,6 +1623,28 @@ fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag>
             // like `\pbo1e20` do not saturate.
             let y = y.clamp(i32::MIN as f32, i32::MAX as f32).round() as i32;
             Some(AnimatedTag::Pbo(y))
+        }
+        "p" => {
+            // `\p<scale>` — drawing-mode toggle. Per the Aegisub spec
+            // the argument is a non-negative integer: `0` disables
+            // drawing mode, `1` enables at native coordinates, `>= 2`
+            // enables with sub-pixel scaling at `2^(value-1)`. The
+            // raw value is surfaced verbatim on
+            // `RenderState::drawing_scale` so the renderer can call
+            // `parse_drawing` with the right exponent. Negative
+            // arguments are dropped (they cannot encode a valid mode);
+            // values above the `u8` ceiling are also dropped, since
+            // the spec lists `2^(value-1)` as the scale factor and any
+            // sensible authoring stays well under `255`.
+            let raw = param.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let n: i32 = raw.parse().ok()?;
+            if !(0..=255).contains(&n) {
+                return None;
+            }
+            Some(AnimatedTag::P(n as u8))
         }
         "fax" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fax),
         "fay" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fay),

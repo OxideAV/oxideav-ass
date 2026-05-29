@@ -685,17 +685,150 @@ fn pbo_round_trips_through_writer() {
 #[test]
 fn pbo_combined_with_p_drawing_mode() {
     // `\pbo` in the same override block as `\p1` (drawing mode on) —
-    // the parser surfaces the Pbo tag from the raw passthrough and the
-    // `\p1` toggle stays opaque; the round-trip keeps both.
+    // the parser surfaces both the Pbo tag and the P drawing-mode
+    // toggle from the raw passthrough; the round-trip keeps both.
     let src = format!(
         "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\p1\\pbo20}}m 0 0 l 100 0 100 100 0 100\n"
     );
     let t = ass::parse(src.as_bytes()).unwrap();
     let anim = extract_cue_animation(&t.cues[0]);
     assert!(anim.tags.iter().any(|t| matches!(t, AnimatedTag::Pbo(20))));
+    assert!(anim.tags.iter().any(|t| matches!(t, AnimatedTag::P(1))));
     let out = String::from_utf8(ass::write(&t)).unwrap();
     assert!(out.contains("\\p1"), "writer dropped \\p1:\n{out}");
     assert!(out.contains("\\pbo20"), "writer dropped \\pbo20:\n{out}");
+}
+
+// -----------------------------------------------------------------------
+// r186: typed extraction for the `\p<scale>` drawing-mode toggle.
+
+#[test]
+fn p_enables_drawing_mode_at_native_scale() {
+    // `\p1` switches the following text into drawing mode at one-pixel
+    // coordinates per the Aegisub spec.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\p1}}m 0 0 l 50 0 l 50 50 l 0 50\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert!(matches!(anim.tags[0], AnimatedTag::P(1)));
+    let st = anim.evaluate_at(0, 1000);
+    assert_eq!(st.drawing_scale, Some(1));
+}
+
+#[test]
+fn p0_disables_drawing_mode() {
+    // `\p0` explicitly disables drawing mode: the renderer should treat
+    // the following text as glyphs again.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\p1}}m 0 0 l 10 10{{\\p0}}back to text\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    // Two `\p` markers in document order: `\p1` followed by `\p0`.
+    let ps: Vec<_> = anim
+        .tags
+        .iter()
+        .filter(|t| matches!(t, AnimatedTag::P(_)))
+        .collect();
+    assert_eq!(ps.len(), 2, "tags: {:?}", anim.tags);
+    assert!(matches!(ps[0], AnimatedTag::P(1)));
+    assert!(matches!(ps[1], AnimatedTag::P(0)));
+    // Last writer wins on the resolved state.
+    let st = anim.evaluate_at(500, 1000);
+    assert_eq!(st.drawing_scale, Some(0));
+}
+
+#[test]
+fn p_sub_pixel_scaling_values_surface_verbatim() {
+    // `\p2` / `\p3` enable drawing mode with `2^(N-1)` sub-pixel scaling
+    // per the Aegisub spec — the raw `N` argument surfaces verbatim so
+    // the renderer can call `parse_drawing(s, scale_exp = N - 1)`.
+    for &(tag, expect) in &[("\\p2", 2u8), ("\\p3", 3), ("\\p4", 4), ("\\p8", 8)] {
+        let src = format!(
+            "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{{}}}m 0 0 l 100 100\n",
+            tag
+        );
+        let t = ass::parse(src.as_bytes()).unwrap();
+        let anim = extract_cue_animation(&t.cues[0]);
+        let st = anim.evaluate_at(0, 1000);
+        assert_eq!(
+            st.drawing_scale,
+            Some(expect),
+            "tag {tag}: scale slot wrong"
+        );
+    }
+}
+
+#[test]
+fn p_negative_argument_drops_tag() {
+    // `\p-1` is not a documented form — drop it at the parser so the
+    // renderer keeps the surrounding mode (defaults to text).
+    let src = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\p-1}}plain\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert!(
+        !anim.tags.iter().any(|t| matches!(t, AnimatedTag::P(_))),
+        "tags: {:?}",
+        anim.tags
+    );
+    // Round-trip still keeps the original bytes via `Segment::Raw`.
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    assert!(out.contains("\\p-1"), "writer dropped \\p-1:\n{out}");
+}
+
+#[test]
+fn p_non_numeric_argument_drops_tag() {
+    // `\pfoo` is malformed — drop it like other parser-rejected
+    // numeric tags (e.g. `\b150` weight, `\an0` out-of-range).
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pfoo}}plain\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert!(
+        !anim.tags.iter().any(|t| matches!(t, AnimatedTag::P(_))),
+        "tags: {:?}",
+        anim.tags
+    );
+}
+
+#[test]
+fn p_is_non_animatable_snaps_inside_t() {
+    // `\p` is a binary text-vs-drawing switch with no meaningful
+    // in-between value — inside `\t(...)` it should snap to the
+    // post-state at `t > t1`, mirroring `\q` / `\an` / `\fn`.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\p0\\t(0,2000,\\p1)}}m 0 0 l 10 10\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    // Pre-state (t = 0): \p0 still active.
+    let s_pre = anim.evaluate_at(0, 2000);
+    assert_eq!(s_pre.drawing_scale, Some(0));
+    // Strictly inside the interpolation window: post-state should
+    // already be in effect (the snap fires at k > 0).
+    let s_mid = anim.evaluate_at(500, 2000);
+    assert_eq!(s_mid.drawing_scale, Some(1));
+    let s_end = anim.evaluate_at(2000, 2000);
+    assert_eq!(s_end.drawing_scale, Some(1));
+}
+
+#[test]
+fn p_round_trip_preserves_verbatim() {
+    // The base parser keeps `\p<N>` in the passthrough block, so the
+    // writer must round-trip the bytes unchanged. The typed extraction
+    // continues to recover the same tag on the second parse.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\p2\\pbo10}}m 0 0 l 100 0\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    assert!(out.contains("\\p2"), "missing \\p2 in:\n{out}");
+    assert!(out.contains("\\pbo10"), "missing \\pbo10 in:\n{out}");
+    let t2 = ass::parse(out.as_bytes()).unwrap();
+    let anim2 = extract_cue_animation(&t2.cues[0]);
+    assert!(anim2.tags.iter().any(|t| matches!(t, AnimatedTag::P(2))));
+    assert!(anim2.tags.iter().any(|t| matches!(t, AnimatedTag::Pbo(10))));
 }
 
 // Suppress an unused-import warning when only some helper types are used.
