@@ -89,6 +89,20 @@
 //!   spec (`100..900`, `400` = normal, `700` = bold). The legacy
 //!   shortcut `\b1` surfaces as `Some(700)`, `\b0` as `Some(0)`.
 //!   Surfaces on [`RenderState::bold_weight`]. Not animatable.
+//! * `\i<flag>` / `\u<flag>` / `\s<flag>` — italic / underline /
+//!   strikeout boolean toggles. `flag = 1` turns the effect on for
+//!   the following text, `flag = 0` turns it off. Surface on
+//!   [`RenderState::italic`] / [`RenderState::underline`] /
+//!   [`RenderState::strikeout`] (`None` = inherit the style's flag,
+//!   `Some(true)` / `Some(false)` = explicit override). The base
+//!   parser already wraps the affected text in
+//!   `Segment::Italic` / `Segment::Underline` / `Segment::Strike`
+//!   so the round-trip writer keeps the original `\i1` / `\u1` /
+//!   `\s1` bytes; the typed extraction here lifts the same toggle
+//!   so renderers that work straight off `RenderState` see it too.
+//!   Not animatable per spec — a boolean face flag has no
+//!   meaningful in-between value; inside `\t(...)` the post-state
+//!   value snaps in at `t > t1`, mirroring `\b` / `\fn` / `\q`.
 //! * `\r[<style>]` — reset all override state for the following text;
 //!   the optional name argument switches the base style to a named
 //!   definition from `[V4+ Styles]`. Surfaces on
@@ -109,9 +123,9 @@
 //!   `\bord`, `\xbord`, `\ybord`, `\shad`, `\xshad`, `\yshad`, `\fax`,
 //!   `\fay`, `\fsp`, `\pbo`. Other inner tags are stored verbatim and
 //!   applied as a static override for `t >= t1`. `\q`, `\an` / `\a`,
-//!   `\fn`, `\fe`, `\b`, and `\r` are static (non-animated) settings
-//!   per spec; they snap to the post-state at `t > t1` rather than
-//!   interpolating.
+//!   `\fn`, `\fe`, `\b`, `\i` / `\u` / `\s`, and `\r` are static
+//!   (non-animated) settings per spec; they snap to the post-state at
+//!   `t > t1` rather than interpolating.
 //!
 //! Times in `\fad`, `\move`, `\t` are milliseconds *from the cue
 //! start*. The ASS spec uses "ms from cue start" as the canonical
@@ -372,6 +386,25 @@ pub enum AnimatedTag {
     /// cannot be interpolated meaningfully; inside `\t(...)` the
     /// post-state value snaps in at `t > t1`.
     B(u16),
+    /// `\i<flag>` — italic toggle. `flag = 1` turns italic on for the
+    /// following text, `flag = 0` turns it off. The Aegisub override-
+    /// tag reference lists `\i` as one of the four font-face flag
+    /// toggles (alongside `\b`, `\u`, `\s`). Surfaces on
+    /// [`RenderState::italic`]. Not animatable per spec — a boolean
+    /// face toggle cannot be interpolated meaningfully; inside
+    /// `\t(...)` the post-state value snaps in at `t > t1`, mirroring
+    /// `\b` / `\fn` / `\q`.
+    I(bool),
+    /// `\u<flag>` — underline toggle. `flag = 1` turns underline on
+    /// for the following text, `flag = 0` turns it off. Surfaces on
+    /// [`RenderState::underline`]. Not animatable per spec; inside
+    /// `\t(...)` it snaps to the post-state at `t > t1`.
+    U(bool),
+    /// `\s<flag>` — strikeout toggle. `flag = 1` turns strikeout on
+    /// for the following text, `flag = 0` turns it off. Surfaces on
+    /// [`RenderState::strikeout`]. Not animatable per spec; inside
+    /// `\t(...)` it snaps to the post-state at `t > t1`.
+    S(bool),
     /// `\k` / `\K` / `\kf` / `\ko` — a karaoke syllable timing marker.
     /// `cs` is the syllable's duration in **centiseconds** (the unit the
     /// `\k` family uses; `100` = one second), and `kind` records which
@@ -575,6 +608,18 @@ pub struct RenderState {
     /// `reset_to_style` slot stays set so callers can tell a reset
     /// happened.
     pub reset_to_style: Option<Option<String>>,
+    /// `\i<flag>` italic toggle, if set. `None` = fall back to the
+    /// style's `Italic` field; `Some(true)` = explicit italic on;
+    /// `Some(false)` = explicit italic off. Not animatable per spec.
+    pub italic: Option<bool>,
+    /// `\u<flag>` underline toggle, if set. `None` = fall back to the
+    /// style's `Underline` field; `Some(true)` = explicit on;
+    /// `Some(false)` = explicit off. Not animatable per spec.
+    pub underline: Option<bool>,
+    /// `\s<flag>` strikeout toggle, if set. `None` = fall back to the
+    /// style's `StrikeOut` field; `Some(true)` = explicit on;
+    /// `Some(false)` = explicit off. Not animatable per spec.
+    pub strikeout: Option<bool>,
     /// `\pbo<y>` drawing baseline offset, if set. `None` = no offset.
     /// The value is a Y-axis shift in script-resolution pixels applied
     /// to every coordinate emitted inside a `\p<scale>` drawing block:
@@ -625,6 +670,9 @@ impl RenderState {
             font_encoding: None,
             bold_weight: None,
             reset_to_style: None,
+            italic: None,
+            underline: None,
+            strikeout: None,
             drawing_baseline_offset: None,
         }
     }
@@ -880,6 +928,15 @@ fn apply_tag(st: &mut RenderState, tag: &AnimatedTag, t_ms: i32, dur_ms: i32) {
         AnimatedTag::B(weight) => {
             st.bold_weight = Some(*weight);
         }
+        AnimatedTag::I(flag) => {
+            st.italic = Some(*flag);
+        }
+        AnimatedTag::U(flag) => {
+            st.underline = Some(*flag);
+        }
+        AnimatedTag::S(flag) => {
+            st.strikeout = Some(*flag);
+        }
         AnimatedTag::R(name) => {
             // Aegisub spec: "cancels all style overrides in effect,
             // including animations, for all following text." Reset
@@ -1074,6 +1131,26 @@ fn apply_t(
             pre.bold_weight
         };
     }
+    // `\i` / `\u` / `\s` are boolean face-flag toggles; the Aegisub
+    // reference lists them in the same non-animatable group as `\b`,
+    // so they snap to the post-state value at `t > t1`.
+    if post.italic != pre.italic {
+        st.italic = if k > 0.0 { post.italic } else { pre.italic };
+    }
+    if post.underline != pre.underline {
+        st.underline = if k > 0.0 {
+            post.underline
+        } else {
+            pre.underline
+        };
+    }
+    if post.strikeout != pre.strikeout {
+        st.strikeout = if k > 0.0 {
+            post.strikeout
+        } else {
+            pre.strikeout
+        };
+    }
     // \r is special: it resets the entire state. Snap the reset target
     // on the same k > 0 boundary; when the reset fires, every other
     // field is already at identity (apply_tag wiped them in the post
@@ -1217,8 +1294,30 @@ fn walk_segments(segs: &[Segment], out: &mut Vec<AnimatedTag>) {
     for s in segs {
         match s {
             Segment::Raw(raw) => parse_raw_block(raw, out),
-            Segment::Bold(c) | Segment::Italic(c) | Segment::Underline(c) | Segment::Strike(c) => {
-                walk_segments(c, out)
+            Segment::Bold(c) => walk_segments(c, out),
+            // The base parser consumes `\i1` / `\u1` / `\s1` into the
+            // matching Segment wrapper for the spanned text, so the
+            // typed extraction recovers the toggle by emitting the
+            // corresponding `AnimatedTag` on the way in. Boolean
+            // toggles can't ramp over time — once seen, the typed
+            // RenderState carries the override for the cue. The base
+            // parser does not emit an explicit `\i0` wrapper at the
+            // span end (the absence of further wrapping is the
+            // "off" signal), so we only push the `true` half here;
+            // an explicit `\i0` arriving through a `Segment::Raw`
+            // override block still reaches `RenderState` via
+            // `parse_overrides`.
+            Segment::Italic(c) => {
+                out.push(AnimatedTag::I(true));
+                walk_segments(c, out);
+            }
+            Segment::Underline(c) => {
+                out.push(AnimatedTag::U(true));
+                walk_segments(c, out);
+            }
+            Segment::Strike(c) => {
+                out.push(AnimatedTag::S(true));
+                walk_segments(c, out);
             }
             Segment::Color { children, .. }
             | Segment::Font { children, .. }
@@ -1566,6 +1665,33 @@ fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag>
                 _ => return None,
             };
             Some(AnimatedTag::B(weight))
+        }
+        "i" => {
+            // `\i<flag>` — italic toggle, per Aegisub spec only
+            // `0` / `1` are valid. Anything else drops the tag (the
+            // renderer falls back to the style's Italic field).
+            let raw = param.trim();
+            match raw {
+                "0" => Some(AnimatedTag::I(false)),
+                "1" => Some(AnimatedTag::I(true)),
+                _ => None,
+            }
+        }
+        "u" => {
+            let raw = param.trim();
+            match raw {
+                "0" => Some(AnimatedTag::U(false)),
+                "1" => Some(AnimatedTag::U(true)),
+                _ => None,
+            }
+        }
+        "s" => {
+            let raw = param.trim();
+            match raw {
+                "0" => Some(AnimatedTag::S(false)),
+                "1" => Some(AnimatedTag::S(true)),
+                _ => None,
+            }
         }
         "r" => {
             // `\r[<style>]` — reset all style overrides; the optional
@@ -3510,5 +3636,250 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\fnArial\\fe128\\b500\\rAlt}
         assert_eq!(st.font_encoding, None);
         assert_eq!(st.bold_weight, None);
         assert_eq!(st.reset_to_style, Some(Some("Alt".to_string())));
+    }
+
+    // ---- \i / \u / \s face-flag toggles ------------------------------
+
+    #[test]
+    fn parses_italic_toggle_on_off() {
+        // The Aegisub override-tag reference lists `\i1` (on) and `\i0`
+        // (off) as the only valid forms; everything else drops.
+        let mut v = Vec::new();
+        parse_overrides("\\i1", &mut v);
+        assert_eq!(v, vec![AnimatedTag::I(true)]);
+        let mut v = Vec::new();
+        parse_overrides("\\i0", &mut v);
+        assert_eq!(v, vec![AnimatedTag::I(false)]);
+    }
+
+    #[test]
+    fn parses_underline_toggle_on_off() {
+        let mut v = Vec::new();
+        parse_overrides("\\u1", &mut v);
+        assert_eq!(v, vec![AnimatedTag::U(true)]);
+        let mut v = Vec::new();
+        parse_overrides("\\u0", &mut v);
+        assert_eq!(v, vec![AnimatedTag::U(false)]);
+    }
+
+    #[test]
+    fn parses_strikeout_toggle_on_off() {
+        let mut v = Vec::new();
+        parse_overrides("\\s1", &mut v);
+        assert_eq!(v, vec![AnimatedTag::S(true)]);
+        let mut v = Vec::new();
+        parse_overrides("\\s0", &mut v);
+        assert_eq!(v, vec![AnimatedTag::S(false)]);
+    }
+
+    #[test]
+    fn italic_underline_strikeout_out_of_range_drop() {
+        // Anything outside `0`/`1` is dropped (the renderer falls back
+        // to the style's flag). The spec only defines the boolean
+        // toggle for these tags.
+        let mut v = Vec::new();
+        parse_overrides("\\i2", &mut v);
+        assert!(v.is_empty());
+        let mut v = Vec::new();
+        parse_overrides("\\u3", &mut v);
+        assert!(v.is_empty());
+        let mut v = Vec::new();
+        parse_overrides("\\s-1", &mut v);
+        assert!(v.is_empty());
+        let mut v = Vec::new();
+        parse_overrides("\\ifoo", &mut v);
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn italic_writes_render_state_italic() {
+        // Direct raw-block extraction: a `\i1` reaches the animate path
+        // through `Segment::Raw` (e.g. in a passthrough block alongside
+        // other tags) and sets `RenderState::italic` to `Some(true)`.
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\i1\\fad(100,100)}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st = anim.evaluate_at(500, 1000);
+        assert_eq!(st.italic, Some(true));
+        // \fad survives in the same block alongside \i.
+        assert!(anim
+            .tags
+            .iter()
+            .any(|t| matches!(t, AnimatedTag::Fad { .. })));
+    }
+
+    #[test]
+    fn underline_writes_render_state_underline() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\u1\\fad(100,100)}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st = anim.evaluate_at(500, 1000);
+        assert_eq!(st.underline, Some(true));
+    }
+
+    #[test]
+    fn strikeout_writes_render_state_strikeout() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\s1\\fad(100,100)}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st = anim.evaluate_at(500, 1000);
+        assert_eq!(st.strikeout, Some(true));
+    }
+
+    #[test]
+    fn italic_via_segment_wrapper_walks_through_to_render_state() {
+        // The base parser consumes a standalone `\i1` into
+        // `Segment::Italic([..])` (it doesn't reach the animate path
+        // via `Segment::Raw`). The walker should still surface the
+        // toggle as `AnimatedTag::I(true)` so `RenderState::italic`
+        // matches what the base parser saw.
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Italic(vec![Segment::Text("hi".to_string())])],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st = anim.evaluate_at(500, 1000);
+        assert_eq!(st.italic, Some(true));
+        assert_eq!(st.underline, None);
+        assert_eq!(st.strikeout, None);
+    }
+
+    #[test]
+    fn underline_strikeout_via_segment_wrappers_walk_through() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![
+                Segment::Underline(vec![Segment::Text("u".to_string())]),
+                Segment::Strike(vec![Segment::Text("s".to_string())]),
+            ],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st = anim.evaluate_at(500, 1000);
+        assert_eq!(st.underline, Some(true));
+        assert_eq!(st.strikeout, Some(true));
+        assert_eq!(st.italic, None);
+    }
+
+    #[test]
+    fn explicit_off_toggle_in_raw_block_overrides_segment_wrapper() {
+        // If `\i1` and a later `\i0` appear in the same raw passthrough
+        // block, the later one wins (last writer in `apply_tag`).
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\i1\\i0}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st = anim.evaluate_at(500, 1000);
+        assert_eq!(st.italic, Some(false));
+    }
+
+    #[test]
+    fn i_snaps_inside_t_at_post_state() {
+        // `\i` is a boolean face flag — the Aegisub reference lists it
+        // with `\b` in the non-animatable group, so inside `\t(...)`
+        // it snaps to the post-state at `t > t1`.
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\i0\\t(0,500,\\i1)}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st0 = anim.evaluate_at(0, 1000);
+        assert_eq!(st0.italic, Some(false));
+        let st1 = anim.evaluate_at(250, 1000);
+        assert_eq!(st1.italic, Some(true));
+        let st2 = anim.evaluate_at(600, 1000);
+        assert_eq!(st2.italic, Some(true));
+    }
+
+    #[test]
+    fn u_snaps_inside_t_at_post_state() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\u0\\t(0,500,\\u1)}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st0 = anim.evaluate_at(0, 1000);
+        assert_eq!(st0.underline, Some(false));
+        let st1 = anim.evaluate_at(250, 1000);
+        assert_eq!(st1.underline, Some(true));
+    }
+
+    #[test]
+    fn s_snaps_inside_t_at_post_state() {
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            segments: vec![Segment::Raw("{\\s0\\t(0,500,\\s1)}".to_string())],
+            positioning: Default::default(),
+        };
+        let anim = extract_cue_animation(&cue);
+        let st0 = anim.evaluate_at(0, 1000);
+        assert_eq!(st0.strikeout, Some(false));
+        let st1 = anim.evaluate_at(250, 1000);
+        assert_eq!(st1.strikeout, Some(true));
+    }
+
+    #[test]
+    fn round_trip_keeps_i_u_s_via_segment_wrappers() {
+        // The base parser wraps standalone `\i1` / `\u1` / `\s1` into
+        // Segment::Italic / Underline / Strike. A parse → write cycle
+        // through those wrappers re-emits the toggle bytes so the text
+        // round-trip stays byte-faithful, and the second parse still
+        // surfaces the typed `RenderState::italic` / underline /
+        // strikeout fields.
+        let src = "\
+[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[V4+ Styles]\n\
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, Alignment, MarginL, MarginR, MarginV, Outline, Shadow\n\
+Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,2,10,10,10,1,0\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\i1}it{\\u1}u{\\s1}s\n";
+        let t = crate::parse(src.as_bytes()).unwrap();
+        let bytes = crate::write(&t);
+        let out = String::from_utf8(bytes).unwrap();
+        assert!(out.contains("\\i1"), "missing \\i1 in: {out}");
+        assert!(out.contains("\\u1"), "missing \\u1 in: {out}");
+        assert!(out.contains("\\s1"), "missing \\s1 in: {out}");
+        let t2 = crate::parse(out.as_bytes()).unwrap();
+        let anim = extract_cue_animation(&t2.cues[0]);
+        let st = anim.evaluate_at(500, 2000);
+        assert_eq!(st.italic, Some(true));
+        assert_eq!(st.underline, Some(true));
+        assert_eq!(st.strikeout, Some(true));
     }
 }

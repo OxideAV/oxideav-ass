@@ -116,14 +116,23 @@ What the parser understands and preserves on round-trip:
 - **Typed face-state extraction** — `\fn<name>` (font family),
   `\fe<id>` (Windows charset ID, e.g. `128` = Shift-JIS, `134` =
   GB2312, `136` = BIG5), `\b<weight>` (font weight 100..900, with
-  `\b1`/`\b0` mapping to 700/0), and `\r[<style>]` (reset to the
-  line's base style or a named style). All four surface through the
-  `animate` module — call `evaluate_at(t_ms, dur_ms)` on the
-  resulting `CueAnimation` and read `RenderState::font_name`,
-  `font_encoding`, `bold_weight`, and `reset_to_style`. None are
+  `\b1`/`\b0` mapping to 700/0), `\i<flag>` / `\u<flag>` /
+  `\s<flag>` (italic / underline / strikeout boolean toggles), and
+  `\r[<style>]` (reset to the line's base style or a named style).
+  All seven surface through the `animate` module — call
+  `evaluate_at(t_ms, dur_ms)` on the resulting `CueAnimation` and
+  read `RenderState::font_name`, `font_encoding`, `bold_weight`,
+  `italic`, `underline`, `strikeout`, and `reset_to_style`. None are
   animatable per spec; inside `\t(...)` they snap to the post-state
-  at `t > t1`. The full text round-trip continues to emit each tag
-  verbatim through `Segment::Raw`.
+  at `t > t1`. The italic / underline / strikeout fields are
+  `Option<bool>` — `None` means "fall back to the style's flag",
+  while `Some(true)` / `Some(false)` carry the explicit override.
+  The `Segment::Italic` / `Segment::Underline` / `Segment::Strike`
+  wrappers the base parser emits for the byte-faithful round-trip
+  are also walked, so a cue parsed straight from `\i1` text reaches
+  `RenderState::italic = Some(true)` without a separate raw block.
+  The full text round-trip continues to emit each tag verbatim
+  through `Segment::Raw`.
 - **Animated tags** — `\fad(t1,t2)`, `\fade(7-arg)`, `\pos(x,y)`
   (static line position; non-moving counterpart of `\move`, writes the
   same `translate` field), `\move(...)`,

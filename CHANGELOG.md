@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed extraction for the `\i<flag>` / `\u<flag>` / `\s<flag>`
+  italic / underline / strikeout face-flag toggles from the Aegisub
+  override-tag reference. Each surfaces as a new
+  `AnimatedTag::I(bool)` / `U(bool)` / `S(bool)` variant alongside
+  the existing animated set, with `RenderState::italic`,
+  `RenderState::underline`, and `RenderState::strikeout` exposing
+  the resolved override as `Option<bool>` (`None` = inherit the
+  style's flag; `Some(true)` / `Some(false)` = explicit on / off).
+  The boolean toggle reaches the animate path through two doors:
+  the base parser still consumes a standalone `\i1` / `\u1` /
+  `\s1` into the matching `Segment::Italic` / `Segment::Underline`
+  / `Segment::Strike` wrapper for the byte-faithful text round-trip,
+  and `walk_segments` now emits `AnimatedTag::I(true)` /
+  `U(true)` / `S(true)` when it descends into those wrappers, so a
+  cue parsed directly from the dialogue text reaches
+  `RenderState::italic = Some(true)` without needing a separate
+  `Segment::Raw` block; an explicit `\i0` (or any later override)
+  arriving through a raw passthrough block still overrides the
+  wrapper-derived toggle via the standard last-writer-wins
+  `apply_tag` model. None of the three are animatable per the
+  Aegisub spec — a boolean face flag has no meaningful in-between
+  value — so inside `\t(...)` each snaps to the post-state value at
+  `t > t1`, mirroring the existing `\b` / `\fn` / `\q` handling.
+  The parser rejects anything outside the `0` / `1` toggle (the
+  spec's only documented values for these tags) so the renderer
+  keeps the style's flag for malformed inputs like `\i2` or
+  `\sfoo`. Round-tripping a `{\\i1}it{\\u1}u{\\s1}s` line re-emits
+  the original `\i1` / `\u1` / `\s1` bytes through the segment
+  wrappers and the typed surface still recovers all three on the
+  second parse.
+
 - Typed extraction for the `\pbo<y>` drawing-mode baseline-offset
   override tag from the Aegisub override-tag reference (no entry in
   the Kotus / TCAX spec — `\pbo` is an Aegisub-era extension). The
