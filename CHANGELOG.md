@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed extraction for the `\pbo<y>` drawing-mode baseline-offset
+  override tag from the Aegisub override-tag reference (no entry in
+  the Kotus / TCAX spec — `\pbo` is an Aegisub-era extension). The
+  tag carries a Y-axis pixel offset applied to every coordinate
+  emitted inside a `\p<scale>` drawing block: per the Aegisub
+  examples, `\pbo-50` draws "50 pixels above specified" and
+  `\pbo100` draws "100 pixels below". Surfaces as a new
+  `AnimatedTag::Pbo(i32)` variant alongside the existing animated
+  set, with `RenderState::drawing_baseline_offset: Option<i32>`
+  exposing the resolved value (`None` = no offset; renderers leave
+  drawing coordinates untranslated). Animatable inside `\t(...)`:
+  the offset ramps linearly between the pre- and post-state values
+  and is round-clamped back into `i32` at each sample, mirroring
+  the integer-strength handling of `\be`. When the pre-state slot
+  is `None`, the lerp uses `0` as the implicit baseline so a
+  `\t(0,t2,\pbo100)` ramp climbs from `0` up to `100` instead of
+  snapping to `100` immediately. `\pbo` is unknown to the base
+  parser, so it survives via `Segment::Raw` and re-emits verbatim
+  through the writer (including when combined with `\p1` in the
+  same override block). The drawing-mode rasterisation is still
+  out of scope per the existing `\p` opt-out, but consumers using
+  `parse_drawing` to lift the path can translate by
+  `(0, drawing_baseline_offset.unwrap_or(0))` before rasterising.
+
 - Typed extraction for four more override tags from the Aegisub /
   Kotus tag reference: `\fn<name>` (font family), `\fe<id>` (Windows
   font-encoding / charset ID for the glyph-mapping table),

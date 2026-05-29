@@ -96,15 +96,21 @@
 //!   `Some(Some(name))` for `\r<name>`); applying a `\r` also clears
 //!   every other override field per the spec's "cancels all style
 //!   overrides in effect" rule.
+//! * `\pbo<y>` — drawing baseline offset; a Y-axis shift in script-
+//!   resolution pixels applied to every coordinate inside a `\p`
+//!   drawing block. Positive = down, negative = up. Surfaces on
+//!   [`RenderState::drawing_baseline_offset`]. Affects only drawing-
+//!   mode coordinates; glyph text is unchanged. Animatable inside
+//!   `\t(...)` (ramps linearly, round-clamped to `i32` per sample).
 //! * `\t(t1, t2, [accel,] tags)` — interpolate the inner tags over
 //!   `[t1, t2]` within the cue. Inner tags supported in this round:
 //!   `\fscx`, `\fscy`, `\frz`, `\c` / `\1c` / `\2c` / `\3c` / `\4c`,
 //!   `\alpha` / `\1a` / `\2a` / `\3a` / `\4a`, `\fs`, `\blur`,
 //!   `\bord`, `\xbord`, `\ybord`, `\shad`, `\xshad`, `\yshad`, `\fax`,
-//!   `\fay`, `\fsp`. Other inner tags are stored verbatim and applied
-//!   as a static override for `t >= t1`. `\q`, `\an` / `\a`, `\fn`,
-//!   `\fe`, `\b`, and `\r` are static (non-animated) settings per
-//!   spec; they snap to the post-state at `t > t1` rather than
+//!   `\fay`, `\fsp`, `\pbo`. Other inner tags are stored verbatim and
+//!   applied as a static override for `t >= t1`. `\q`, `\an` / `\a`,
+//!   `\fn`, `\fe`, `\b`, and `\r` are static (non-animated) settings
+//!   per spec; they snap to the post-state at `t > t1` rather than
 //!   interpolating.
 //!
 //! Times in `\fad`, `\move`, `\t` are milliseconds *from the cue
@@ -377,6 +383,19 @@ pub enum AnimatedTag {
     /// concept rather than a per-frame state, so [`apply_tag`] treats it
     /// as a no-op on [`RenderState`]; renderers walk the spans instead.
     Karaoke { kind: KaraokeKind, cs: u32 },
+    /// `\pbo<y>` — drawing baseline offset on the Y axis, in script-
+    /// resolution pixels. The Aegisub spec defines it as a Y-offset
+    /// applied to every coordinate emitted by a `\p` drawing block: a
+    /// positive value shifts the drawing **down**, a negative value
+    /// shifts it **up** (`\pbo-50` draws 50 px above the specified
+    /// position, `\pbo100` draws 100 px below). The tag only affects
+    /// drawing mode (`\p1`/`\p2`/...) — glyph text is unchanged.
+    /// Surfaces on [`RenderState::drawing_baseline_offset`]. Animatable
+    /// per the Aegisub reference's positioning-tag conventions: inside
+    /// `\t(...)` the offset ramps linearly between the pre- and post-
+    /// state values and is round-clamped back into `i32` at each
+    /// sample, mirroring the `\be` strength handling.
+    Pbo(i32),
     /// `\t([t1,t2,[accel,]] inner_tags)` — interpolate the inner tags
     /// over `[t1, t2]`. When `t1`/`t2` are omitted ASS treats them as
     /// `[0, cue_duration]`. `accel` defaults to 1.0 (linear).
@@ -556,6 +575,17 @@ pub struct RenderState {
     /// `reset_to_style` slot stays set so callers can tell a reset
     /// happened.
     pub reset_to_style: Option<Option<String>>,
+    /// `\pbo<y>` drawing baseline offset, if set. `None` = no offset.
+    /// The value is a Y-axis shift in script-resolution pixels applied
+    /// to every coordinate emitted inside a `\p<scale>` drawing block:
+    /// positive shifts the drawing **down**, negative shifts it
+    /// **up** (e.g. `Some(-50)` corresponds to `\pbo-50`). Glyph text
+    /// is unaffected by `\pbo`; only drawing-mode output picks the
+    /// offset up. Renderers walking `oxideav_ass::parse_drawing` paths
+    /// should translate the resulting path by `(0, offset)` before
+    /// rasterising. Animatable inside `\t(...)`; round-clamped back to
+    /// `i32` at each sample.
+    pub drawing_baseline_offset: Option<i32>,
 }
 
 impl RenderState {
@@ -595,6 +625,7 @@ impl RenderState {
             font_encoding: None,
             bold_weight: None,
             reset_to_style: None,
+            drawing_baseline_offset: None,
         }
     }
 }
@@ -859,6 +890,12 @@ fn apply_tag(st: &mut RenderState, tag: &AnimatedTag, t_ms: i32, dur_ms: i32) {
             *st = RenderState::identity();
             st.reset_to_style = Some(name.clone());
         }
+        AnimatedTag::Pbo(y) => {
+            // Drawing baseline offset on the Y axis. Renderers consult
+            // this slot when laying out `\p<scale>` drawing blocks; it
+            // does not affect glyph text.
+            st.drawing_baseline_offset = Some(*y);
+        }
         AnimatedTag::T {
             t1_ms,
             t2_ms,
@@ -942,6 +979,19 @@ fn apply_t(
         let from = pre.be_strength as f32;
         let to = post.be_strength as f32;
         st.be_strength = lerp_f32(from, to, k).clamp(0.0, 255.0).round() as u8;
+    }
+    // \pbo ramps linearly and rounds back to i32 at each sample,
+    // mirroring the integer-strength behaviour of \be. When the pre-
+    // state slot is `None` we treat the baseline as `0` (the "no
+    // offset" default) so that a `\t(0,t2,\pbo100)` ramp climbs from 0
+    // up to 100 rather than snapping to 100 immediately.
+    if let Some(y) = post.drawing_baseline_offset {
+        let from = pre.drawing_baseline_offset.unwrap_or(0) as f32;
+        let to = y as f32;
+        let v = lerp_f32(from, to, k)
+            .clamp(i32::MIN as f32, i32::MAX as f32)
+            .round() as i32;
+        st.drawing_baseline_offset = Some(v);
     }
     st.shear.0 = lerp_f32(pre.shear.0, post.shear.0, k);
     st.shear.1 = lerp_f32(pre.shear.1, post.shear.1, k);
@@ -1400,6 +1450,21 @@ fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag>
         "shad" => param.trim().parse::<f32>().ok().map(AnimatedTag::Shad),
         "xshad" => param.trim().parse::<f32>().ok().map(AnimatedTag::Xshad),
         "yshad" => param.trim().parse::<f32>().ok().map(AnimatedTag::Yshad),
+        "pbo" => {
+            // `\pbo<y>` — Y-offset for drawing coordinates. The Aegisub
+            // examples use whole pixels (`\pbo-50`, `\pbo100`); accept
+            // floats from the wild and round to `i32`. Empty
+            // parameters drop the tag (no override).
+            let raw = param.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let y = raw.parse::<f32>().ok()?;
+            // Clamp to i32 range before rounding so degenerate inputs
+            // like `\pbo1e20` do not saturate.
+            let y = y.clamp(i32::MIN as f32, i32::MAX as f32).round() as i32;
+            Some(AnimatedTag::Pbo(y))
+        }
         "fax" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fax),
         "fay" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fay),
         "fscx" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fscx),

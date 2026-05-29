@@ -135,8 +135,9 @@ What the parser understands and preserves on round-trip:
   alpha), `\clip(rect)`, `\clip(drawing)`, `\iclip(rect)`,
   `\iclip(drawing)`, `\q` (line wrap-style override; static per spec),
   `\an<1..=9>` (numpad alignment) plus the legacy `\a<pos>` form
-  (converted to the same numpad surface), and `\t(...)` wrapping any
-  of the animatable ones. These are exposed via the `animate` module:
+  (converted to the same numpad surface), `\pbo<y>` (drawing baseline
+  Y-offset; positive = down, negative = up, applies only to `\p`
+  drawing blocks), and `\t(...)` wrapping any of the animatable ones. These are exposed via the `animate` module:
   call `oxideav_ass::extract_cue_animation(&cue)` to get a typed
   `CueAnimation`, then `evaluate_at(t_ms, dur_ms)` to sample the
   resulting `RenderState` (alpha multiplier, `Transform2D`, optional
@@ -145,7 +146,8 @@ What the parser understands and preserves on round-trip:
   `(fax, fay)` shear factors, additive letter spacing, line wrap
   style, line alignment as a numpad code, primary / secondary /
   outline / shadow colours, per-channel alphas independent of the
-  `\fad` envelope, pivot, per-axis rotations) at any timestamp. The
+  `\fad` envelope, pivot, per-axis rotations, drawing baseline Y-
+  offset) at any timestamp. The
   textual round-trip continues to emit the original tags verbatim.
 - **Karaoke timing** — the `\k` family (`\k` instant fill / `\kf` and
   the identical uppercase `\K` left-to-right sweep / `\ko` outline
@@ -199,7 +201,11 @@ Out of scope for this crate:
   `RenderState::rotate_x_radians` / `rotate_y_radians`.
 - Free-form `\p` drawing-mode rendering (the rasterisation of
   drawing blocks as decorative shapes) is parser-only — use
-  `parse_drawing` to lift the path into your own scene.
+  `parse_drawing` to lift the path into your own scene. The
+  baseline-offset companion tag `\pbo<y>` does surface on
+  `RenderState::drawing_baseline_offset`; renderers should translate
+  their parsed path by `(0, drawing_baseline_offset.unwrap_or(0))`
+  before rasterising.
 
 ### Codec / container IDs
 

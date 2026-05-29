@@ -584,6 +584,120 @@ fn frx_fry_inside_t_round_trip() {
     );
 }
 
+#[test]
+fn pbo_static_positive_offset() {
+    // `\pbo100` — Aegisub example: draws 100 px below the specified
+    // position. Surfaces on `RenderState::drawing_baseline_offset`.
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pbo100}}shape\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert!(
+        anim.tags.iter().any(|t| matches!(t, AnimatedTag::Pbo(100))),
+        "missing Pbo(100): {:?}",
+        anim.tags
+    );
+    let st = anim.evaluate_at(500, 1000);
+    assert_eq!(st.drawing_baseline_offset, Some(100));
+}
+
+#[test]
+fn pbo_static_negative_offset() {
+    // `\pbo-50` — the Aegisub example for "above the specified
+    // position" (negative Y).
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pbo-50}}shape\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert!(
+        anim.tags.iter().any(|t| matches!(t, AnimatedTag::Pbo(-50))),
+        "missing Pbo(-50): {:?}",
+        anim.tags
+    );
+    let st = anim.evaluate_at(500, 1000);
+    assert_eq!(st.drawing_baseline_offset, Some(-50));
+}
+
+#[test]
+fn pbo_zero_default_when_absent() {
+    // Without a `\pbo` override the slot stays `None`, signalling that
+    // the renderer should not translate drawing coordinates.
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\frz45}}rotated\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    let st = anim.evaluate_at(500, 1000);
+    assert_eq!(st.drawing_baseline_offset, None);
+}
+
+#[test]
+fn pbo_decimal_rounds_to_i32() {
+    // Decimal payloads round to the nearest `i32` (mirrors `\be`'s
+    // integer-strength rounding for floats from the wild).
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pbo12.7}}shape\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert!(anim.tags.iter().any(|t| matches!(t, AnimatedTag::Pbo(13))));
+}
+
+#[test]
+fn pbo_inside_t_interpolates_linearly() {
+    // `\t(0,1000,\pbo100)` — ramp the drawing baseline offset from 0
+    // (the pre-state default of "no override") to 100 over the cue.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\t(0,1000,\\pbo100)}}shape\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    let s_start = anim.evaluate_at(0, 1000);
+    let s_mid = anim.evaluate_at(500, 1000);
+    let s_end = anim.evaluate_at(1000, 1000);
+    // At t == t1 the interpolation factor is 0, so the slot reflects
+    // the pre-state baseline (no override) translated through the
+    // post-state value of 100 — see apply_t's "fall back to pre"
+    // behaviour for animatable post-only fields.
+    assert_eq!(s_start.drawing_baseline_offset, Some(0));
+    // Halfway: 50.
+    assert_eq!(s_mid.drawing_baseline_offset, Some(50));
+    // At t == t2 the post value snaps in.
+    assert_eq!(s_end.drawing_baseline_offset, Some(100));
+}
+
+#[test]
+fn pbo_round_trips_through_writer() {
+    // `\pbo` is unknown to the base parser, so it must survive via
+    // `Segment::Raw` and the writer must emit it back verbatim.
+    let src =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pbo-25}}shape\n");
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    assert!(out.contains("\\pbo-25"), "writer dropped \\pbo-25:\n{out}");
+    // Re-parse should still surface the typed tag.
+    let t2 = ass::parse(out.as_bytes()).unwrap();
+    let anim2 = extract_cue_animation(&t2.cues[0]);
+    assert!(anim2
+        .tags
+        .iter()
+        .any(|t| matches!(t, AnimatedTag::Pbo(-25))));
+}
+
+#[test]
+fn pbo_combined_with_p_drawing_mode() {
+    // `\pbo` in the same override block as `\p1` (drawing mode on) —
+    // the parser surfaces the Pbo tag from the raw passthrough and the
+    // `\p1` toggle stays opaque; the round-trip keeps both.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\p1\\pbo20}}m 0 0 l 100 0 100 100 0 100\n"
+    );
+    let t = ass::parse(src.as_bytes()).unwrap();
+    let anim = extract_cue_animation(&t.cues[0]);
+    assert!(anim.tags.iter().any(|t| matches!(t, AnimatedTag::Pbo(20))));
+    let out = String::from_utf8(ass::write(&t)).unwrap();
+    assert!(out.contains("\\p1"), "writer dropped \\p1:\n{out}");
+    assert!(out.contains("\\pbo20"), "writer dropped \\pbo20:\n{out}");
+}
+
 // Suppress an unused-import warning when only some helper types are used.
 #[allow(dead_code)]
 fn _ensure_cliprect_import_used(_: ClipRect) {}
