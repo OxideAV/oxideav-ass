@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8](https://github.com/OxideAV/oxideav-ass/compare/v0.0.7...v0.0.8) - 2026-05-29
+
+### Other
+
+- typed extraction for the \p<scale> drawing-mode toggle
+- typed extraction for \i / \u / \s italic/underline/strikeout toggles
+- typed extraction for \pbo drawing baseline offset
+- typed extraction for \fn / \fe / \b<weight> / \r[<style>]
+- align r131 frx/fry tests to Linux rustfmt reflow
+- pin \frx / \fry parallel test coverage
+
 ### Added
 
 - Typed extraction for the `\p<scale>` drawing-mode toggle override
