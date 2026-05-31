@@ -8,7 +8,8 @@
 //! [`crate::CueAnimation::evaluate_at`]: callers can step the
 //! `eval_offset_ms` field between calls to get a series of frames that
 //! reflect the `\t` / `\fad` / `\move` / `\frx` / `\fry` / `\frz` /
-//! `\clip` overrides at successive moments in the cue's lifetime.
+//! `\fax` / `\fay` / `\clip` overrides at successive moments in the
+//! cue's lifetime.
 //!
 //! Pipeline (per `receive_frame`):
 //!
@@ -22,7 +23,9 @@
 //!    - `transform` composes the animation's `move` ∘ pivoted
 //!      `\frx`/`\fry`/`\frz` ∘ `\fscx`/`\fscy` matrix (3D rotations
 //!      reduced to a 2D affine via a small-angle approximation around
-//!      the pivot, so the renderer stays purely 2D);
+//!      the pivot, so the renderer stays purely 2D) and a `\fax` /
+//!      `\fay` shear pre-step pivoted on the cue's alignment point
+//!      (independent of `\org`, per the Aegisub spec);
 //!    - `opacity` is `RenderState::alpha_mul`;
 //!    - `clip` is the `\clip(rect)` rectangle path or, if
 //!      `\clip(drawing)` is active, the drawing-path parsed by
@@ -235,9 +238,15 @@ impl AnimatedRenderedDecoder {
         }
 
         // Compose the animation transform around the anchor (or
-        // \org-supplied pivot).
-        let pivot = state.pivot.unwrap_or((anchor_x, last_baseline as f32));
-        let anim_xf = animation_transform(state, pivot);
+        // \org-supplied pivot). The anchor (the cue's alignment point)
+        // is passed separately so the `\fax` / `\fay` shear step can
+        // pivot on it regardless of where `\org` puts the rotation
+        // pivot — per the Aegisub override-tag reference, "the
+        // coordinate system used for shearing is not affected by the
+        // rotation origin".
+        let anchor = (anchor_x, last_baseline as f32);
+        let pivot = state.pivot.unwrap_or(anchor);
+        let anim_xf = animation_transform(state, pivot, anchor);
 
         // Optional clip: prefer drawing-path over rect when both set.
         let clip_path = if let Some(s) = state.clip_drawing.as_ref() {
@@ -399,13 +408,25 @@ fn walk_text(segs: &[Segment], out: &mut String) {
 }
 
 /// Build the affine 2D transform that approximates the animation's
-/// translate / scale / 3D rotations around `pivot`.
+/// translate / scale / 3D rotations around `pivot`, with a `\fax` /
+/// `\fay` shear pre-step pivoted on `anchor`.
 ///
 /// The 2D affine pipeline we apply (right-to-left) is:
 ///
-/// 1. translate(-pivot)
-/// 2. scale(sx, sy)
-/// 3. shear/squeeze approximating `\fry` (X scale by cos α_y) and
+/// 1. translate(-anchor) — shift the cue's alignment point to the
+///    origin so the shear pivots on it.
+/// 2. shear(fax, fay) — the per-tag-reference matrix
+///    `[[1, fax], [fay, 1]]`. Per the Aegisub override-tag reference,
+///    "the coordinate system used for shearing is not affected by the
+///    rotation origin", so the shear's pivot is the alignment point
+///    rather than `\org`. The shear is folded into the text-local
+///    frame *before* rotation/scale; the subsequent rotation then
+///    carries the distortion along, matching the spec's "after
+///    rotation, on the rotated coordinates" effect.
+/// 3. translate(+anchor) — undo the shear pivot.
+/// 4. translate(-pivot)
+/// 5. scale(sx, sy)
+/// 6. shear/squeeze approximating `\fry` (X scale by cos α_y) and
 ///    `\frx` (Y scale by cos α_x). True 3D would project onto a
 ///    perspective camera; here we use the small-angle / orthographic
 ///    approximation: the visible width shrinks by `cos(α_y)` for a
@@ -413,12 +434,27 @@ fn walk_text(segs: &[Segment], out: &mut String) {
 ///    rotation around X. This is the standard "fold in half" effect
 ///    most ASS renderers fall back on when no perspective camera is
 ///    configured.
-/// 4. rotate(α_z) (`\frz`)
-/// 5. translate(+pivot)
-/// 6. translate(extra_translate) when `\pos` / `\move` set one.
-fn animation_transform(state: &RenderState, pivot: (f32, f32)) -> Transform2D {
+/// 7. rotate(α_z) (`\frz`)
+/// 8. translate(+pivot)
+/// 9. translate(extra_translate) when `\pos` / `\move` set one.
+fn animation_transform(state: &RenderState, pivot: (f32, f32), anchor: (f32, f32)) -> Transform2D {
     let (px, py) = pivot;
-    let mut t = Transform2D::translate(-px, -py);
+    let (ax, ay) = anchor;
+    let (fax, fay) = state.shear;
+    let has_shear = fax.abs() > f32::EPSILON || fay.abs() > f32::EPSILON;
+
+    // Anchor-relative shear pre-step. Applied to glyph coords before
+    // any rotation/scale, so the rotation carries the distortion with
+    // the text.
+    let mut t = Transform2D::identity();
+    if has_shear {
+        t = Transform2D::translate(-ax, -ay);
+        t = shear_matrix(fax, fay).compose(&t);
+        t = Transform2D::translate(ax, ay).compose(&t);
+    }
+
+    // Pivot-relative scale/3D/rotate.
+    t = Transform2D::translate(-px, -py).compose(&t);
     let (sx, sy) = state.scale;
     if (sx - 1.0).abs() > f32::EPSILON || (sy - 1.0).abs() > f32::EPSILON {
         t = Transform2D::scale(sx, sy).compose(&t);
@@ -443,6 +479,29 @@ fn animation_transform(state: &RenderState, pivot: (f32, f32)) -> Transform2D {
         t = Transform2D::translate(tx - px, ty - py).compose(&t);
     }
     t
+}
+
+/// Build the `\fax` / `\fay` shear matrix in column-vector convention:
+///
+/// ```text
+/// [ 1   fax ] [x]   [x + fax*y]
+/// [ fay   1 ] [y] = [fay*x + y]
+/// ```
+///
+/// Mapping into the `Transform2D` `(a, b, c, d, e, f)` layout (where
+/// `apply(p) = (a*x + c*y + e, b*x + d*y + f)`): `a = 1`, `b = fay`,
+/// `c = fax`, `d = 1`, `e = f = 0`. The matrix is centred at the
+/// origin; the caller wraps it in the anchor translate pair to put
+/// the shear's pivot at the cue's alignment point.
+fn shear_matrix(fax: f32, fay: f32) -> Transform2D {
+    Transform2D {
+        a: 1.0,
+        b: fay,
+        c: fax,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    }
 }
 
 /// Factory helper: wrap an existing subtitle decoder + face into a
@@ -479,7 +538,7 @@ mod tests {
         // 90° \frz around pivot (10,10): the pivot itself maps to itself.
         let mut st = RenderState::identity();
         st.rotate_radians = std::f32::consts::FRAC_PI_2;
-        let t = animation_transform(&st, (10.0, 10.0));
+        let t = animation_transform(&st, (10.0, 10.0), (10.0, 10.0));
         let p = t.apply(Point::new(10.0, 10.0));
         assert!((p.x - 10.0).abs() < 1e-4);
         assert!((p.y - 10.0).abs() < 1e-4);
@@ -490,7 +549,7 @@ mod tests {
         // 60° \frx → cos(60°) = 0.5: y distances around pivot halve.
         let mut st = RenderState::identity();
         st.rotate_x_radians = std::f32::consts::FRAC_PI_3;
-        let t = animation_transform(&st, (0.0, 0.0));
+        let t = animation_transform(&st, (0.0, 0.0), (0.0, 0.0));
         let p = t.apply(Point::new(0.0, 100.0));
         assert!((p.y - 50.0).abs() < 1e-3, "got y={}", p.y);
     }
@@ -499,7 +558,7 @@ mod tests {
     fn fry_compresses_x() {
         let mut st = RenderState::identity();
         st.rotate_y_radians = std::f32::consts::FRAC_PI_3;
-        let t = animation_transform(&st, (0.0, 0.0));
+        let t = animation_transform(&st, (0.0, 0.0), (0.0, 0.0));
         let p = t.apply(Point::new(100.0, 0.0));
         assert!((p.x - 50.0).abs() < 1e-3, "got x={}", p.x);
     }
@@ -509,10 +568,71 @@ mod tests {
         let mut st = RenderState::identity();
         st.rotate_radians = std::f32::consts::FRAC_PI_2;
         st.pivot = Some((100.0, 100.0));
-        let t = animation_transform(&st, st.pivot.unwrap());
+        let t = animation_transform(&st, st.pivot.unwrap(), (0.0, 0.0));
         let p = t.apply(Point::new(100.0, 100.0));
         assert!((p.x - 100.0).abs() < 1e-4);
         assert!((p.y - 100.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn fax_shears_x_by_y_around_anchor() {
+        // \fax(0.5) at anchor (0,0): a point at y=100 shifts +50 in x.
+        let mut st = RenderState::identity();
+        st.shear = (0.5, 0.0);
+        let t = animation_transform(&st, (0.0, 0.0), (0.0, 0.0));
+        let p = t.apply(Point::new(0.0, 100.0));
+        assert!((p.x - 50.0).abs() < 1e-4, "got x={}", p.x);
+        assert!((p.y - 100.0).abs() < 1e-4, "got y={}", p.y);
+        // The anchor itself maps to itself under a pure shear.
+        let a = t.apply(Point::new(0.0, 0.0));
+        assert!(a.x.abs() < 1e-4 && a.y.abs() < 1e-4);
+    }
+
+    #[test]
+    fn fay_shears_y_by_x_around_anchor() {
+        // \fay(-0.25) at anchor (50,50): a point at x=150 (Δx=+100)
+        // shifts y by -0.25 * 100 = -25.
+        let mut st = RenderState::identity();
+        st.shear = (0.0, -0.25);
+        let t = animation_transform(&st, (50.0, 50.0), (50.0, 50.0));
+        let p = t.apply(Point::new(150.0, 50.0));
+        assert!((p.x - 150.0).abs() < 1e-4, "got x={}", p.x);
+        assert!((p.y - 25.0).abs() < 1e-4, "got y={}", p.y);
+    }
+
+    #[test]
+    fn shear_pivots_on_anchor_not_org() {
+        // \org(200,200) puts the rotation pivot far from the anchor
+        // (10,10). \fax(0.5) shear must still pivot on the anchor —
+        // the anchor itself must stay invariant under the pre-rotate
+        // shear step (here with rotation disabled so the result is the
+        // pure shear pipeline).
+        let mut st = RenderState::identity();
+        st.shear = (0.5, 0.0);
+        st.pivot = Some((200.0, 200.0));
+        let t = animation_transform(&st, (200.0, 200.0), (10.0, 10.0));
+        let p = t.apply(Point::new(10.0, 10.0));
+        assert!((p.x - 10.0).abs() < 1e-4, "anchor x not preserved: {}", p.x);
+        assert!((p.y - 10.0).abs() < 1e-4, "anchor y not preserved: {}", p.y);
+        // A point above the anchor (Δy=+50) shears by +25 in x and is
+        // otherwise unchanged.
+        let q = t.apply(Point::new(10.0, 60.0));
+        assert!((q.x - 35.0).abs() < 1e-4, "got x={}", q.x);
+        assert!((q.y - 60.0).abs() < 1e-4, "got y={}", q.y);
+    }
+
+    #[test]
+    fn shear_matrix_layout_matches_spec() {
+        // The shear matrix on its own — sanity check that the column-
+        // vector convention from the Aegisub override-tag reference
+        // round-trips through `Transform2D::apply`.
+        let m = shear_matrix(0.3, -0.2);
+        let p = m.apply(Point::new(1.0, 0.0));
+        assert!((p.x - 1.0).abs() < 1e-6);
+        assert!((p.y + 0.2).abs() < 1e-6);
+        let q = m.apply(Point::new(0.0, 1.0));
+        assert!((q.x - 0.3).abs() < 1e-6);
+        assert!((q.y - 1.0).abs() < 1e-6);
     }
 
     #[test]

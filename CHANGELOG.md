@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `AnimatedRenderedDecoder` now bakes the `\fax` / `\fay` shear into
+  the per-cue affine. The shear is applied as a pre-step pivoted on
+  the cue's alignment point (independent of `\org`, per the Aegisub
+  override-tag reference's "the coordinate system used for shearing
+  is not affected by the rotation origin" rule); the rotation step
+  then carries the distortion along, matching the spec's "shearing
+  is performed after rotation, on the rotated coordinates" effect.
+  A pure `\fax` widens the visible x-extent while leaving the y-
+  extent unchanged; a pure `\fay` shears y by x and stretches the
+  visible y-extent. `RenderState::shear` was already populated by
+  the typed extractor — this commit only wires it into
+  `animation_transform` so the rasterised output reflects it. New
+  unit tests in `render.rs` pin the matrix layout
+  (`[[1, fax], [fay, 1]]` per the Aegisub reference) and verify the
+  anchor stays invariant under a pure shear even when `\org` is far
+  away; new integration tests in `tests/render.rs` exercise the
+  pipeline end-to-end with a TTF.
+
 ## [0.0.8](https://github.com/OxideAV/oxideav-ass/compare/v0.0.7...v0.0.8) - 2026-05-29
 
 ### Other
