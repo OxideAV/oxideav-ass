@@ -151,12 +151,24 @@ impl AnimatedRenderedDecoder {
     fn render_cue_animated(&self, cue: &SubtitleCue, state: &RenderState) -> VideoFrame {
         let mut buf = vec![0u8; (self.width as usize) * (self.height as usize) * 4];
 
-        // Default alignment.
-        let align = cue
-            .positioning
-            .as_ref()
-            .map(|p| p.align)
-            .unwrap_or(TextAlign::Center);
+        // Pick the working alignment. Per the Aegisub override-tag
+        // reference, an `\an<pos>` / `\a<pos>` override on the line
+        // wins over the style's `Alignment` field; the typed extractor
+        // already resolved both into `RenderState::alignment` as a
+        // 1..=9 numpad code. Fall back to the cue's positioning hint
+        // (Left/Center/Right) — kept as the bottom row — when no
+        // numpad override is active.
+        let (align, vrow) = match state.alignment {
+            Some(n) if (1..=9).contains(&n) => numpad_to_align(n),
+            _ => {
+                let h = cue
+                    .positioning
+                    .as_ref()
+                    .map(|p| p.align)
+                    .unwrap_or(TextAlign::Center);
+                (h, VerticalRow::Bottom)
+            }
+        };
 
         // Flatten visible text from the cue's segments.
         let text = collect_visible_text(&cue.segments);
@@ -186,15 +198,57 @@ impl AnimatedRenderedDecoder {
         if visual_lines.is_empty() {
             return wrap_buf(buf, self.width, cue.start_us);
         }
-        // Layout vertical: stack from bottom up using face metrics.
+        // Vertical layout depends on the alignment row. All three rows
+        // share the same line-height stride; only the anchor of the
+        // *last* baseline (= the bottom line's baseline) changes:
+        //
+        //   * Bottom row (numpad 1/2/3, or no override): the last
+        //     baseline sits `bottom_margin_px + descent` above the
+        //     canvas bottom — the existing behaviour.
+        //   * Top row (numpad 7/8/9): the *first* baseline sits
+        //     `top_margin_px + ascent` below the canvas top; the last
+        //     baseline is therefore `top + (n-1) * line_h`.
+        //   * Middle row (numpad 4/5/6): the line stack is centred
+        //     vertically around the canvas mid-point — the centre of
+        //     the stack (top of the first line + half the full block
+        //     height) sits at `height / 2`.
+        //
+        // The renderer's existing `bottom_margin_px` doubles as the
+        // top margin so a `\an7` cue mirrors a `\an1` cue's edge gap;
+        // we deliberately do not introduce a separate field to keep
+        // the API additive.
         let face_line_h = face.primary().line_height_px(size_px).ceil().max(1.0) as u32;
         let face_descent_abs = (-face.primary().descent_px(size_px)).ceil().max(0.0) as u32;
+        let face_ascent_abs = face.primary().ascent_px(size_px).ceil().max(0.0) as u32;
         let line_h = face_line_h.max(1);
         let n_lines = visual_lines.len();
-        let last_baseline = self
-            .height
-            .saturating_sub(self.bottom_margin_px)
-            .saturating_sub(face_descent_abs);
+        let last_baseline = match vrow {
+            VerticalRow::Bottom => self
+                .height
+                .saturating_sub(self.bottom_margin_px)
+                .saturating_sub(face_descent_abs),
+            VerticalRow::Top => {
+                // First baseline at top_margin + ascent; last baseline
+                // is `(n_lines - 1) * line_h` further down.
+                let first = self.bottom_margin_px.saturating_add(face_ascent_abs);
+                first.saturating_add(((n_lines - 1) as u32) * line_h)
+            }
+            VerticalRow::Middle => {
+                // The line stack occupies `(n_lines - 1) * line_h +
+                // (ascent + descent)` vertically. Centre that block on
+                // the canvas mid-line, then pin the *last* baseline
+                // accordingly: last = centre + (block_height / 2) -
+                // descent.
+                let block_h = ((n_lines - 1) as u32)
+                    .saturating_mul(line_h)
+                    .saturating_add(face_ascent_abs)
+                    .saturating_add(face_descent_abs);
+                let centre = self.height / 2;
+                centre
+                    .saturating_add(block_h / 2)
+                    .saturating_sub(face_descent_abs)
+            }
+        };
 
         // Assemble per-glyph nodes inside an inner Group at canvas coords.
         let mut inner = Group::default();
@@ -287,6 +341,43 @@ impl AnimatedRenderedDecoder {
         }
         wrap_buf(buf, self.width, cue.start_us)
     }
+}
+
+/// Which row of the Aegisub numpad-alignment table a cue is anchored
+/// to. Decomposed from the 1..=9 code by [`numpad_to_align`]; drives
+/// the renderer's vertical-baseline pick (see
+/// `AnimatedRenderedDecoder::render_cue_animated`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum VerticalRow {
+    /// Numpad 1/2/3 — text sits above the canvas bottom margin.
+    Bottom,
+    /// Numpad 4/5/6 — text is centred vertically on the canvas.
+    Middle,
+    /// Numpad 7/8/9 — text sits below the canvas top margin.
+    Top,
+}
+
+/// Decompose an Aegisub numpad alignment code (1..=9) into the
+/// horizontal `TextAlign` and the [`VerticalRow`] anchor per the
+/// override-tag reference's "1/2/3 = bottom-{left,center,right};
+/// 4/5/6 = middle-{left,center,right}; 7/8/9 = top-{left,center,
+/// right}" mapping.
+///
+/// Values outside `1..=9` fall through as `(Center, Bottom)`; callers
+/// must filter unknown codes ahead of time (the typed extractor
+/// already drops out-of-range codes from `RenderState::alignment`).
+fn numpad_to_align(n: u8) -> (TextAlign, VerticalRow) {
+    let row = match (n - 1) / 3 {
+        0 => VerticalRow::Bottom,
+        1 => VerticalRow::Middle,
+        _ => VerticalRow::Top,
+    };
+    let col = match (n - 1) % 3 {
+        0 => TextAlign::Left,
+        1 => TextAlign::Center,
+        _ => TextAlign::Right,
+    };
+    (col, row)
 }
 
 fn wrap_buf(data: Vec<u8>, width: u32, start_us: i64) -> VideoFrame {
@@ -663,5 +754,21 @@ mod tests {
         // Smoke check.
         let c = dummy_cue();
         assert_eq!(collect_visible_text(&c.segments), "hi");
+    }
+
+    #[test]
+    fn numpad_to_align_decomposes_rows_and_columns() {
+        // Bottom row.
+        assert_eq!(numpad_to_align(1), (TextAlign::Left, VerticalRow::Bottom));
+        assert_eq!(numpad_to_align(2), (TextAlign::Center, VerticalRow::Bottom));
+        assert_eq!(numpad_to_align(3), (TextAlign::Right, VerticalRow::Bottom));
+        // Middle row.
+        assert_eq!(numpad_to_align(4), (TextAlign::Left, VerticalRow::Middle));
+        assert_eq!(numpad_to_align(5), (TextAlign::Center, VerticalRow::Middle));
+        assert_eq!(numpad_to_align(6), (TextAlign::Right, VerticalRow::Middle));
+        // Top row.
+        assert_eq!(numpad_to_align(7), (TextAlign::Left, VerticalRow::Top));
+        assert_eq!(numpad_to_align(8), (TextAlign::Center, VerticalRow::Top));
+        assert_eq!(numpad_to_align(9), (TextAlign::Right, VerticalRow::Top));
     }
 }

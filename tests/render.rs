@@ -391,6 +391,125 @@ fn fay_shears_y_distortion_extends_bbox() {
 }
 
 #[test]
+fn an_numpad_anchors_vertical_row() {
+    // Three cues at \an2 (bottom-centre), \an5 (middle-centre), and
+    // \an8 (top-centre). The rendered bbox vertical centre should
+    // climb monotonically from bottom row → top row.
+    let face_a = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let face_b = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let face_c = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let bottom =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\an2}}ANCHOR\n");
+    let middle =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\an5}}ANCHOR\n");
+    let top =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\an8}}ANCHOR\n");
+
+    let h = 240u32;
+    let inner_b = build_decoder(&bottom);
+    let mut dec_b = AnimatedRenderedDecoder::new(inner_b, 320, h, face_a);
+    let bbox_b = alpha_bbox(&dec_b.receive_frame().expect("an2"), 320).expect("ink an2");
+
+    let inner_m = build_decoder(&middle);
+    let mut dec_m = AnimatedRenderedDecoder::new(inner_m, 320, h, face_b);
+    let bbox_m = alpha_bbox(&dec_m.receive_frame().expect("an5"), 320).expect("ink an5");
+
+    let inner_t = build_decoder(&top);
+    let mut dec_t = AnimatedRenderedDecoder::new(inner_t, 320, h, face_c);
+    let bbox_t = alpha_bbox(&dec_t.receive_frame().expect("an8"), 320).expect("ink an8");
+
+    let cy_b = (bbox_b.1 + bbox_b.3) as i32 / 2;
+    let cy_m = (bbox_m.1 + bbox_m.3) as i32 / 2;
+    let cy_t = (bbox_t.1 + bbox_t.3) as i32 / 2;
+    // Bottom row sits in the lower third; top row in the upper third;
+    // middle row near the half-line. The exact numbers depend on the
+    // shaper metrics, so test by ordering + by canvas region.
+    assert!(cy_t < cy_m, "expected an8 above an5: top={cy_t} mid={cy_m}");
+    assert!(cy_m < cy_b, "expected an5 above an2: mid={cy_m} bot={cy_b}");
+    let third = h as i32 / 3;
+    assert!(
+        cy_t < third,
+        "an8 bbox centre y={cy_t} should sit in the top third (< {third})"
+    );
+    assert!(
+        cy_b > 2 * third,
+        "an2 bbox centre y={cy_b} should sit in the bottom third (> {})",
+        2 * third
+    );
+    assert!(
+        cy_m > third && cy_m < 2 * third,
+        "an5 bbox centre y={cy_m} should sit in the middle third"
+    );
+}
+
+#[test]
+fn an_numpad_anchors_horizontal_column() {
+    // \an1 (bottom-LEFT), \an2 (bottom-CENTRE), \an3 (bottom-RIGHT)
+    // should each anchor the bbox centre on the appropriate canvas
+    // column.
+    let face_l = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let face_c = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let face_r = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let left = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\an1}}EDGE\n");
+    let centre =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\an2}}EDGE\n");
+    let right =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\an3}}EDGE\n");
+
+    let w = 320u32;
+    let inner_l = build_decoder(&left);
+    let mut dec_l = AnimatedRenderedDecoder::new(inner_l, w, 120, face_l);
+    let bbox_l = alpha_bbox(&dec_l.receive_frame().expect("an1"), w).expect("ink an1");
+
+    let inner_c = build_decoder(&centre);
+    let mut dec_c = AnimatedRenderedDecoder::new(inner_c, w, 120, face_c);
+    let bbox_c = alpha_bbox(&dec_c.receive_frame().expect("an2"), w).expect("ink an2");
+
+    let inner_r = build_decoder(&right);
+    let mut dec_r = AnimatedRenderedDecoder::new(inner_r, w, 120, face_r);
+    let bbox_r = alpha_bbox(&dec_r.receive_frame().expect("an3"), w).expect("ink an3");
+
+    let cx_l = (bbox_l.0 + bbox_l.2) as i32 / 2;
+    let cx_c = (bbox_c.0 + bbox_c.2) as i32 / 2;
+    let cx_r = (bbox_r.0 + bbox_r.2) as i32 / 2;
+    assert!(
+        cx_l < cx_c,
+        "expected an1 left of an2: left={cx_l} centre={cx_c}"
+    );
+    assert!(
+        cx_c < cx_r,
+        "expected an2 left of an3: centre={cx_c} right={cx_r}"
+    );
+    let third = w as i32 / 3;
+    assert!(
+        cx_l < third,
+        "an1 bbox centre x={cx_l} should sit in the left third"
+    );
+    assert!(
+        cx_r > 2 * third,
+        "an3 bbox centre x={cx_r} should sit in the right third"
+    );
+}
+
+#[test]
 fn empty_inner_yields_need_more() {
     let face = match load_face() {
         Some(f) => f,

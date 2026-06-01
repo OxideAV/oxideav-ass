@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AnimatedRenderedDecoder` now honours the typed `\an<n>` / legacy
+  `\a<n>` numpad-alignment override on the per-cue
+  `RenderState::alignment` field, anchoring the line-stack's
+  vertical position by the numpad row in addition to the existing
+  horizontal column. The 1..=9 code is decomposed into a
+  horizontal `TextAlign` (column 1/2/3 = left/centre/right) and a
+  `VerticalRow` (rows 1-3 / 4-6 / 7-9 = bottom / middle / top per
+  the Aegisub override-tag reference's "1/2/3 = bottom-{l,c,r};
+  4/5/6 = middle-{l,c,r}; 7/8/9 = top-{l,c,r}" mapping). Bottom-row
+  cues keep the existing layout (last baseline = `height -
+  bottom_margin_px - descent`); top-row cues anchor the *first*
+  baseline at `bottom_margin_px + ascent` (using the same field as
+  a symmetric top/bottom margin so the additive API stays minimal);
+  middle-row cues centre the full block height (`(n_lines - 1) *
+  line_h + ascent + descent`) on the canvas mid-line. When no
+  numpad override is active the renderer falls back to the cue's
+  `CuePosition::align` hint and keeps the bottom-row baseline (the
+  existing default behaviour). New unit test in `render.rs` pins
+  the numpad decomposition; new integration tests in
+  `tests/render.rs` exercise the three rows (`\an2` / `\an5` /
+  `\an8`) and the three columns (`\an1` / `\an2` / `\an3`)
+  end-to-end against the rasterised bbox.
+
 - `AnimatedRenderedDecoder` now bakes the `\fax` / `\fay` shear into
   the per-cue affine. The shear is applied as a pre-step pivoted on
   the cue's alignment point (independent of `\org`, per the Aegisub

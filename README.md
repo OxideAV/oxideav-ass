@@ -188,13 +188,19 @@ What the parser understands and preserves on round-trip:
   `receive_frame` calls steps the animation forward. Internally it
   composes the evaluated `RenderState` (translate / scale / 3D
   rotations around `\org` / `\fax` / `\fay` shear pivoted on the
-  cue's alignment point / clip path / opacity) onto a `VectorFrame`
-  of shaped glyphs and rasterises through `oxideav-raster`. The
-  shear pre-step uses the Aegisub override-tag reference's matrix
-  `[[1, fax], [fay, 1]]` and pivots on the alignment point rather
-  than `\org`, per the spec's "the coordinate system used for
-  shearing is not affected by the rotation origin" rule. Opt out via
-  `default-features = false`.
+  cue's alignment point / clip path / opacity / `\an<n>` numpad
+  alignment) onto a `VectorFrame` of shaped glyphs and rasterises
+  through `oxideav-raster`. The shear pre-step uses the Aegisub
+  override-tag reference's matrix `[[1, fax], [fay, 1]]` and pivots
+  on the alignment point rather than `\org`, per the spec's "the
+  coordinate system used for shearing is not affected by the
+  rotation origin" rule. The numpad-alignment override (1..9; both
+  `\an` and the legacy `\a` form land here) is decomposed into a
+  horizontal column (left/centre/right) and a vertical row
+  (bottom/middle/top): bottom-row cues sit above the canvas bottom
+  margin (existing behaviour), top-row cues sit below the canvas
+  top margin, and middle-row cues are centred on the canvas
+  mid-line. Opt out via `default-features = false`.
 - `\N` hard line break, `\h` hard space, `\n` soft break.
 - ASS timestamp format `H:MM:SS.cc` (centiseconds).
 - Commas inside the `Text` field are preserved (the CSV splitter stops
