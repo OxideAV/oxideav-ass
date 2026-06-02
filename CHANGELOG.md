@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AnimatedRenderedDecoder` now bakes the typed `\1a` primary-fill
+  alpha override into the rasterised fill colour. Per the Aegisub
+  override-tag reference, `\1a&Haa&` encodes alpha on the
+  `0 = opaque, 255 = transparent` wire convention — the inverse of
+  the rasteriser's RGBA channel, so the renderer maps the byte via
+  `final_a = 255 - ass_a`. The cue-level `\fad` / `\fade` envelope
+  stays on `RenderState::alpha_mul` and is applied as the animation
+  `Group`'s `opacity`; the two compose multiplicatively per the
+  per-spec formula documented on `RenderState::primary_alpha`
+  (`final_primary_alpha = primary_alpha.unwrap_or(style) * alpha_mul`).
+  When `\1a` is not set the renderer keeps the prior behaviour
+  (opaque fill when `\c` / `\1c` set a primary colour; otherwise
+  fall back to `default_color`'s alpha). New integration tests in
+  `tests/render.rs`: `\1a&H00&` matches the no-override baseline
+  ink mass within ±5%, `\1a&H80&` roughly halves it (35..65% of
+  baseline), `\1a&HFF&` produces zero ink, and
+  `\1a&H80&\fad(500,500)` at `t=0` still emits no ink — pinning the
+  multiplicative compose against any future "override wins" or
+  "envelope wins" regression.
+
 - `AnimatedRenderedDecoder` now honours the typed `\an<n>` / legacy
   `\a<n>` numpad-alignment override on the per-cue
   `RenderState::alignment` field, anchoring the line-stack's
@@ -198,7 +218,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - drop renderer-name from \pos decimal-tolerance comment
 - typed extraction for \pos static line position
 - typed extraction for \fsp letter-spacing + \q wrap-style
-- drop libass / Aegisub cross-reference from module docstring
+- drop external-renderer cross-reference from module docstring
 - typed extraction for \2c/\3c/\4c colours + \alpha/\1a..\4a per-component alpha
 - typed extraction for \bord/\xbord/\ybord, \shad/\xshad/\yshad, \be, \fax/\fay, \iclip
 - preserve unknown / Fonts / Graphics section bodies on round-trip

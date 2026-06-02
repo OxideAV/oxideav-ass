@@ -254,10 +254,36 @@ impl AnimatedRenderedDecoder {
         let mut inner = Group::default();
         let mut anchor_x = self.width as f32 / 2.0;
         let anchor_y = last_baseline as f32;
-        let primary_color = state
-            .primary_color
-            .map(|(r, g, b)| [r, g, b, 255])
-            .unwrap_or(self.default_color);
+        // Per-cue primary fill colour. RGB comes from `state.primary_color`
+        // when `\c` / `\1c` set one; otherwise the decoder's
+        // `default_color` (which the constructor seeds to opaque white).
+        //
+        // Per the override-tag reference, ASS encodes per-fill alpha as
+        // `\1a&Haa&` with `0 = opaque, 255 = transparent` — the inverse
+        // of the rasteriser's RGBA alpha channel, so the wire byte is
+        // mapped via `255 - ass_a`. The cue-level `\fad` / `\fade`
+        // envelope is tracked separately in `state.alpha_mul` and
+        // applied as the animation `Group`'s `opacity`; the two compose
+        // multiplicatively (see `RenderState::primary_alpha` for the
+        // per-spec compose formula).
+        let primary_color = {
+            let (r, g, b) = state.primary_color.unwrap_or((
+                self.default_color[0],
+                self.default_color[1],
+                self.default_color[2],
+            ));
+            let a = match state.primary_alpha {
+                Some(ass_a) => 255u8.saturating_sub(ass_a),
+                None => {
+                    if state.primary_color.is_some() {
+                        255
+                    } else {
+                        self.default_color[3]
+                    }
+                }
+            };
+            [r, g, b, a]
+        };
         for (i, line) in visual_lines.iter().enumerate() {
             let line_w_px = measure(face, line, size_px);
             let line_x = match align {

@@ -200,7 +200,14 @@ What the parser understands and preserves on round-trip:
   (bottom/middle/top): bottom-row cues sit above the canvas bottom
   margin (existing behaviour), top-row cues sit below the canvas
   top margin, and middle-row cues are centred on the canvas
-  mid-line. Opt out via `default-features = false`.
+  mid-line. The `\1a` primary-fill alpha override (Aegisub spec
+  convention: `0 = opaque, 255 = transparent`) is baked into the
+  rasterised fill colour as `final_a = 255 - ass_a`, while the
+  cue-level `\fad` / `\fade` envelope stays on the animation
+  `Group`'s `opacity` — the two compose multiplicatively per the
+  formula `final_primary_alpha = primary_alpha.unwrap_or(style) *
+  alpha_mul` documented on `RenderState::primary_alpha`. Opt out
+  via `default-features = false`.
 - `\N` hard line break, `\h` hard space, `\n` soft break.
 - ASS timestamp format `H:MM:SS.cc` (centiseconds).
 - Commas inside the `Text` field are preserved (the CSV splitter stops

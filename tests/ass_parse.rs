@@ -228,7 +228,7 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,hello\n";
 
 #[test]
 fn multiple_unknown_sections_all_round_trip() {
-    // libass/Aegisub-ecosystem files routinely carry several
+    // Editor ecosystem files routinely carry several
     // editor-private sections. All must survive round-trip.
     let src = "[Script Info]\n\
 ScriptType: v4.00+\n\

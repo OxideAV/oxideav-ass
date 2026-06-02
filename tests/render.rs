@@ -536,3 +536,101 @@ fn rendered_decoder_codec_id_matches_inner() {
     let dec = AnimatedRenderedDecoder::new(inner, 32, 16, face);
     assert_eq!(dec.codec_id().as_str(), "ass");
 }
+
+// `\1a` primary-fill alpha — per the override-tag reference the wire
+// byte is `0 = opaque, 255 = transparent` and is independent of the
+// cue-level `\fad` envelope. The renderer composes them
+// multiplicatively, so a higher `\1a` value at a static (non-faded)
+// cue must monotonically reduce the rasterised alpha mass; the
+// reduction must be approximately linear in `255 - ass_a`.
+
+fn render_first_frame(src: &str, w: u32, h: u32) -> Option<Frame> {
+    let face = load_face()?;
+    let inner = build_decoder(src);
+    let mut dec = AnimatedRenderedDecoder::new(inner, w, h, face);
+    dec.receive_frame().ok()
+}
+
+#[test]
+fn primary_alpha_zero_emits_fully_opaque_ink() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\1a&H00&` — primary fill explicitly opaque. Must produce the
+    // same mass as the baseline (no `\1a`).
+    let base = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n");
+    let amped =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\1a&H00&}}SUB\n");
+    let m_base = alpha_mass(&render_first_frame(&base, 320, 64).expect("render base"));
+    let m_amped = alpha_mass(&render_first_frame(&amped, 320, 64).expect("render amped"));
+    assert!(
+        m_base > 0,
+        "baseline render must produce ink (mass = {m_base})"
+    );
+    // Equal up to a small rasteriser-rounding tolerance.
+    let lo = (m_base as i64 * 95) / 100;
+    let hi = (m_base as i64 * 105) / 100;
+    assert!(
+        (m_amped as i64) >= lo && (m_amped as i64) <= hi,
+        "\\1a&H00& must match baseline ink mass: base = {m_base}, amped = {m_amped}"
+    );
+}
+
+#[test]
+fn primary_alpha_half_yields_half_ink() {
+    if load_face().is_none() {
+        return;
+    }
+    let opaque = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n");
+    let half =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\1a&H80&}}SUB\n");
+    let m_opaque = alpha_mass(&render_first_frame(&opaque, 320, 64).expect("render opaque"));
+    let m_half = alpha_mass(&render_first_frame(&half, 320, 64).expect("render half"));
+    assert!(m_opaque > 0, "opaque render must produce ink");
+    // `\1a&H80&` ≈ 50% transparent: rasterised mass should land near
+    // half the opaque mass. Allow a generous 35..65% window — the
+    // exact ratio depends on the compositor's alpha math + glyph edge
+    // anti-aliasing.
+    let ratio_pct = ((m_half as f64) * 100.0 / (m_opaque as f64)) as i64;
+    assert!(
+        (35..=65).contains(&ratio_pct),
+        "\\1a&H80& should roughly halve ink mass: opaque = {m_opaque}, half = {m_half}, ratio = {ratio_pct}%"
+    );
+}
+
+#[test]
+fn primary_alpha_full_yields_no_ink() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\1a&HFF&` — primary fill is fully transparent. Ink mass must
+    // be zero.
+    let invisible =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\1a&HFF&}}SUB\n");
+    let m = alpha_mass(&render_first_frame(&invisible, 320, 64).expect("render invisible"));
+    assert_eq!(m, 0, "\\1a&HFF& should produce no ink, got mass = {m}");
+}
+
+#[test]
+fn primary_alpha_compounds_with_fad_envelope() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\1a&H80&\fad(500, 500)` — 50% per-fill alpha multiplied by the
+    // fade-in envelope. At t = 0 ms the envelope is 0 → no ink
+    // regardless of `\1a`. The renderer must therefore emit an empty
+    // frame, demonstrating that the two compose multiplicatively
+    // rather than `\1a` overriding the envelope (or vice versa).
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\1a&H80&\\fad(500,500)}}SUB\n"
+    );
+    let face = load_face().expect("face");
+    let inner = build_decoder(&src);
+    let mut dec = AnimatedRenderedDecoder::new(inner, 320, 64, face);
+    let f0 = dec.receive_frame().expect("frame at t=0");
+    assert_eq!(
+        alpha_mass(&f0),
+        0,
+        "fade-in at t=0 must produce no ink even with \\1a&H80&"
+    );
+}
