@@ -680,9 +680,9 @@ fn inverse_rect_path(canvas_w: f32, canvas_h: f32, r: &ClipRect) -> Path {
 /// the renderer relies on the drawing's natural winding cancelling
 /// it inside the drawing's interior under NonZero. Drawings whose
 /// outer subpath happens to share the rect's winding direction will
-/// stack rather than cancel — this matches the Aegisub spec note
-/// that the inverse-drawing form mirrors the positive `\clip`
-/// drawing parser; co-wound paths are not a common authoring case.
+/// stack rather than cancel — the spec notes that the inverse-drawing
+/// form mirrors the positive `\clip` drawing parser; co-wound paths
+/// are not a common authoring case.
 fn inverse_path_from_inner(canvas_w: f32, canvas_h: f32, inner: &Path) -> Path {
     let (ox1, oy1, ox2, oy2) = inverse_outer_extents(canvas_w, canvas_h);
     let mut p = Path::new();
