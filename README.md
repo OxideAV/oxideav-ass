@@ -222,7 +222,19 @@ What the parser understands and preserves on round-trip:
   "regular effect, repeated `strength` times" definition. The two
   filters stay on independent `RenderState` channels (`blur_sigma`
   + `be_strength`) per the spec's "more advanced algorithm vs
-  iterative" distinction. Opt out via `default-features = false`.
+  iterative" distinction. The `\iclip(rect)` and `\iclip(drawing)`
+  inverse-clip overrides are also baked in: the renderer constructs
+  a compound clip path with an outer ring well past the canvas
+  followed by the inverse subpath in reverse traversal direction so
+  the rasteriser's NonZero fill rule sees the area *outside* the
+  cut-out as the keep region. The clip-precedence chain is
+  `\clip(drawing)` → `\clip(rect)` → `\iclip(drawing)` →
+  `\iclip(rect)`; when both a positive `\clip` and an inverse
+  `\iclip` appear on the same segment the positive form wins,
+  matching the existing "last-set-wins" override model (the Aegisub
+  override-tag reference describes each form independently and does
+  not pin a co-occurrence rule). Opt out via
+  `default-features = false`.
 - `\N` hard line break, `\h` hard space, `\n` soft break.
 - ASS timestamp format `H:MM:SS.cc` (centiseconds).
 - Commas inside the `Text` field are preserved (the CSV splitter stops

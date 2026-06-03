@@ -354,12 +354,40 @@ impl AnimatedRenderedDecoder {
         let pivot = state.pivot.unwrap_or(anchor);
         let anim_xf = animation_transform(state, pivot, anchor);
 
-        // Optional clip: prefer drawing-path over rect when both set.
+        // Optional clip. Precedence, matching the existing
+        // "drawing beats rect" rule on the positive `\clip` side and
+        // extending it to `\iclip`: `\clip(drawing)` →
+        // `\clip(rect)` → `\iclip(drawing)` → `\iclip(rect)`. The
+        // positive forms win when both a clip and an inverse clip
+        // are set on the same segment — the renderer keeps the
+        // existing "last-set-wins" model for the override pair
+        // rather than trying to compose the intersection (the
+        // Aegisub override-tag reference describes each form
+        // independently and does not pin a co-occurrence rule).
+        //
+        // The inverse paths are built as compound paths with the
+        // outer ring wound CCW and the inner ring CW so the
+        // rasteriser's NonZero fill rule sees the area outside the
+        // cut-out as the keep region. The outer ring extends well
+        // past the canvas in script coordinates so any reasonable
+        // animation transform leaves the keep region covering the
+        // visible viewport.
+        let canvas_w = self.width as f32;
+        let canvas_h = self.height as f32;
         let clip_path = if let Some(s) = state.clip_drawing.as_ref() {
             let (scale, body) = drawing::split_clip_arg(s);
             Some(drawing::parse_drawing(body, scale))
+        } else if let Some(r) = state.clip_rect.as_ref() {
+            Some(rect_to_path(r))
+        } else if let Some(s) = state.iclip_drawing.as_ref() {
+            let (scale, body) = drawing::split_clip_arg(s);
+            let inner = drawing::parse_drawing(body, scale);
+            Some(inverse_path_from_inner(canvas_w, canvas_h, &inner))
         } else {
-            state.clip_rect.as_ref().map(rect_to_path)
+            state
+                .iclip_rect
+                .as_ref()
+                .map(|r| inverse_rect_path(canvas_w, canvas_h, r))
         };
 
         let group = Group {
@@ -604,6 +632,174 @@ fn rect_to_path(r: &ClipRect) -> Path {
     p.line_to(Point::new(r.x1, r.y2));
     p.close();
     p
+}
+
+/// Outer-ring extents used by the inverse-clip builders.
+///
+/// The outer ring extends well past the canvas (`[-canvas, +2 *
+/// canvas]`) so any reasonable animation transform — translate,
+/// scale, rotation — applied to the group still leaves the viewport
+/// inside the outer ring. A `0 × 0` canvas degrades to a tiny but
+/// non-empty extent so the rasteriser's flatten + fill steps still
+/// have something to chew on.
+fn inverse_outer_extents(canvas_w: f32, canvas_h: f32) -> (f32, f32, f32, f32) {
+    let w = if canvas_w > 0.0 { canvas_w } else { 1.0 };
+    let h = if canvas_h > 0.0 { canvas_h } else { 1.0 };
+    (-w, -h, 2.0 * w, 2.0 * h)
+}
+
+/// Build the inverse-rect clip path: an outer ring well past the
+/// canvas (CW in screen-space, matching [`rect_to_path`]) followed
+/// by the inner cut-out ring (CCW — reverse direction). With the
+/// rasteriser's NonZero fill rule the donut interior is everything
+/// **outside** the inner rectangle but inside the outer extents —
+/// i.e. the keep region the `\iclip(rect)` override calls for.
+fn inverse_rect_path(canvas_w: f32, canvas_h: f32, r: &ClipRect) -> Path {
+    let (ox1, oy1, ox2, oy2) = inverse_outer_extents(canvas_w, canvas_h);
+    let mut p = Path::new();
+    // Outer ring — same direction as `rect_to_path` (the positive form
+    // that fills the rectangle interior under NonZero).
+    p.move_to(Point::new(ox1, oy1));
+    p.line_to(Point::new(ox2, oy1));
+    p.line_to(Point::new(ox2, oy2));
+    p.line_to(Point::new(ox1, oy2));
+    p.close();
+    // Inner ring — reverse direction so its winding cancels the outer
+    // ring's inside the cut-out, leaving zero winding (no fill) there.
+    p.move_to(Point::new(r.x1, r.y1));
+    p.line_to(Point::new(r.x1, r.y2));
+    p.line_to(Point::new(r.x2, r.y2));
+    p.line_to(Point::new(r.x2, r.y1));
+    p.close();
+    p
+}
+
+/// Build the inverse-drawing clip path: an outer ring well past the
+/// canvas followed by the inner drawing's commands. The outer ring
+/// is wound the same way as [`rect_to_path`] (the positive form);
+/// the renderer relies on the drawing's natural winding cancelling
+/// it inside the drawing's interior under NonZero. Drawings whose
+/// outer subpath happens to share the rect's winding direction will
+/// stack rather than cancel — this matches the Aegisub spec note
+/// that the inverse-drawing form mirrors the positive `\clip`
+/// drawing parser; co-wound paths are not a common authoring case.
+fn inverse_path_from_inner(canvas_w: f32, canvas_h: f32, inner: &Path) -> Path {
+    let (ox1, oy1, ox2, oy2) = inverse_outer_extents(canvas_w, canvas_h);
+    let mut p = Path::new();
+    p.move_to(Point::new(ox1, oy1));
+    p.line_to(Point::new(ox2, oy1));
+    p.line_to(Point::new(ox2, oy2));
+    p.line_to(Point::new(ox1, oy2));
+    p.close();
+    // Append the inner path commands in reverse traversal so its
+    // winding flips relative to its natural orientation; the inner
+    // and outer thus disagree on direction and the NonZero rule
+    // cuts the inner shape out of the outer fill.
+    for cmd in reversed_path_commands(inner) {
+        p.commands.push(cmd);
+    }
+    p
+}
+
+/// Reverse the traversal direction of `path` while preserving its
+/// subpath structure. `MoveTo` markers stay at the start of each
+/// subpath; `LineTo` / `QuadCurveTo` / `CubicCurveTo` segments swap
+/// endpoints (and Bezier control points reverse so the curve still
+/// passes through the same set of points in the opposite direction);
+/// `Close` markers stay where they were.
+fn reversed_path_commands(path: &Path) -> Vec<oxideav_core::PathCommand> {
+    use oxideav_core::PathCommand;
+    // Split into subpaths first so each subpath can be reversed in
+    // isolation. A subpath starts at a `MoveTo` and ends at the next
+    // `MoveTo` boundary; a trailing `Close` belongs to the subpath
+    // it closes.
+    let mut subpaths: Vec<Vec<PathCommand>> = Vec::new();
+    let mut current: Vec<PathCommand> = Vec::new();
+    for cmd in &path.commands {
+        match cmd {
+            PathCommand::MoveTo(_) => {
+                if !current.is_empty() {
+                    subpaths.push(std::mem::take(&mut current));
+                }
+                current.push(*cmd);
+            }
+            _ => current.push(*cmd),
+        }
+    }
+    if !current.is_empty() {
+        subpaths.push(current);
+    }
+
+    let mut out: Vec<PathCommand> = Vec::new();
+    for sub in subpaths {
+        // Strip the trailing Close (it goes back on at the end).
+        let (close, body) = match sub.last() {
+            Some(PathCommand::Close) => (true, &sub[..sub.len() - 1]),
+            _ => (false, &sub[..]),
+        };
+        // Collect the subpath's vertices in traversal order: the
+        // MoveTo's anchor first, then each segment's endpoint.
+        let mut verts: Vec<Point> = Vec::new();
+        // First command is the MoveTo (subpaths always start with
+        // one in well-formed paths; default to origin otherwise).
+        let start = match body.first() {
+            Some(PathCommand::MoveTo(p)) => *p,
+            _ => Point::new(0.0, 0.0),
+        };
+        verts.push(start);
+        for cmd in &body[1..] {
+            match cmd {
+                PathCommand::LineTo(p) => verts.push(*p),
+                PathCommand::QuadCurveTo { end, .. } => verts.push(*end),
+                PathCommand::CubicCurveTo { end, .. } => verts.push(*end),
+                PathCommand::MoveTo(p) => verts.push(*p),
+                _ => {}
+            }
+        }
+        if verts.len() < 2 {
+            // Degenerate subpath — keep as-is so we don't lose the
+            // anchor point entirely.
+            out.extend_from_slice(body);
+            if close {
+                out.push(PathCommand::Close);
+            }
+            continue;
+        }
+
+        // Emit reversed: start at the last vertex, walk backward.
+        out.push(PathCommand::MoveTo(*verts.last().unwrap()));
+        // For each original segment i (i in 1..verts.len()), the
+        // reversed traversal walks from verts[i] back to verts[i-1].
+        // We re-issue segments in reverse order to match.
+        for i in (1..verts.len()).rev() {
+            let orig_cmd = &body[i];
+            match orig_cmd {
+                PathCommand::LineTo(_) | PathCommand::MoveTo(_) => {
+                    out.push(PathCommand::LineTo(verts[i - 1]));
+                }
+                PathCommand::QuadCurveTo { control, .. } => {
+                    // Quad reversed: same control point, swap endpoints.
+                    out.push(PathCommand::QuadCurveTo {
+                        control: *control,
+                        end: verts[i - 1],
+                    });
+                }
+                PathCommand::CubicCurveTo { c1, c2, .. } => {
+                    // Cubic reversed: swap control points and endpoints.
+                    out.push(PathCommand::CubicCurveTo {
+                        c1: *c2,
+                        c2: *c1,
+                        end: verts[i - 1],
+                    });
+                }
+                _ => {}
+            }
+        }
+        if close {
+            out.push(PathCommand::Close);
+        }
+    }
+    out
 }
 
 fn repaint_node(node: Node, paint: &Paint) -> Node {
@@ -1168,5 +1364,159 @@ mod tests {
         assert_eq!(numpad_to_align(7), (TextAlign::Left, VerticalRow::Top));
         assert_eq!(numpad_to_align(8), (TextAlign::Center, VerticalRow::Top));
         assert_eq!(numpad_to_align(9), (TextAlign::Right, VerticalRow::Top));
+    }
+
+    #[test]
+    fn inverse_rect_path_has_two_subpaths_and_ten_commands() {
+        // Outer ring (move + 3 line + close = 5) + inner ring (same
+        // shape = 5) = 10 commands.
+        let r = ClipRect {
+            x1: 10.0,
+            y1: 20.0,
+            x2: 50.0,
+            y2: 60.0,
+        };
+        let p = super::inverse_rect_path(320.0, 200.0, &r);
+        assert_eq!(p.commands.len(), 10);
+        // First command is the outer ring's MoveTo, well past the
+        // canvas's negative corner.
+        match p.commands[0] {
+            oxideav_core::PathCommand::MoveTo(pt) => {
+                assert!(pt.x < 0.0 && pt.y < 0.0, "got ({}, {})", pt.x, pt.y);
+            }
+            _ => panic!("expected MoveTo at index 0"),
+        }
+        // Sixth command is the inner ring's MoveTo, at (x1, y1).
+        match p.commands[5] {
+            oxideav_core::PathCommand::MoveTo(pt) => {
+                assert!((pt.x - 10.0).abs() < 1e-4 && (pt.y - 20.0).abs() < 1e-4);
+            }
+            _ => panic!("expected MoveTo at index 5"),
+        }
+    }
+
+    #[test]
+    fn inverse_rect_outer_extents_cover_double_canvas() {
+        let (ox1, oy1, ox2, oy2) = super::inverse_outer_extents(320.0, 200.0);
+        assert!((ox1 + 320.0).abs() < 1e-4, "got ox1={ox1}");
+        assert!((oy1 + 200.0).abs() < 1e-4, "got oy1={oy1}");
+        assert!((ox2 - 640.0).abs() < 1e-4, "got ox2={ox2}");
+        assert!((oy2 - 400.0).abs() < 1e-4, "got oy2={oy2}");
+    }
+
+    #[test]
+    fn inverse_rect_outer_extents_handle_zero_canvas() {
+        // A 0×0 canvas degrades to a 1-unit fallback so the rasteriser
+        // still gets a non-empty outer ring.
+        let (ox1, oy1, ox2, oy2) = super::inverse_outer_extents(0.0, 0.0);
+        assert!((ox1 + 1.0).abs() < 1e-4 && (oy1 + 1.0).abs() < 1e-4);
+        assert!((ox2 - 2.0).abs() < 1e-4 && (oy2 - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn inverse_rect_inner_winding_is_reverse_of_rect_to_path() {
+        // `rect_to_path` walks (x1,y1) → (x2,y1) → (x2,y2) → (x1,y2) →
+        // close (clockwise in screen-space, the "fill" direction under
+        // NonZero). The inverse builder's inner ring must walk the
+        // opposite order so its winding cancels the outer ring's
+        // inside the cut-out, leaving zero winding (no fill) there.
+        let r = ClipRect {
+            x1: 5.0,
+            y1: 5.0,
+            x2: 15.0,
+            y2: 15.0,
+        };
+        let p = super::inverse_rect_path(100.0, 100.0, &r);
+        // Inner ring is commands 5..10.
+        let inner = &p.commands[5..10];
+        let pts: Vec<(f32, f32)> = inner
+            .iter()
+            .filter_map(|c| match c {
+                oxideav_core::PathCommand::MoveTo(pt) | oxideav_core::PathCommand::LineTo(pt) => {
+                    Some((pt.x, pt.y))
+                }
+                _ => None,
+            })
+            .collect();
+        // Inner walks (x1,y1) → (x1,y2) → (x2,y2) → (x2,y1) — reverse
+        // of `rect_to_path`'s order.
+        assert_eq!(
+            pts,
+            vec![(5.0, 5.0), (5.0, 15.0), (15.0, 15.0), (15.0, 5.0)]
+        );
+    }
+
+    #[test]
+    fn inverse_path_from_inner_starts_with_outer_ring() {
+        // Feed in a simple triangle; the inverse path must begin with
+        // the 5-command outer ring (move + 3 lines + close) followed
+        // by the reversed-traversal inner.
+        let mut tri = Path::new();
+        tri.move_to(Point::new(0.0, 0.0));
+        tri.line_to(Point::new(10.0, 0.0));
+        tri.line_to(Point::new(5.0, 10.0));
+        tri.close();
+
+        let p = super::inverse_path_from_inner(100.0, 100.0, &tri);
+        // Outer ring first (5 commands), then reversed triangle (5
+        // commands too: move + 2 lines + close = 4 from the
+        // reversed-line-and-close path, plus 1 for the kept Close).
+        assert!(p.commands.len() >= 5);
+        match p.commands[0] {
+            oxideav_core::PathCommand::MoveTo(pt) => {
+                assert!(pt.x < 0.0 && pt.y < 0.0);
+            }
+            _ => panic!("expected outer-ring MoveTo at index 0"),
+        }
+    }
+
+    #[test]
+    fn reversed_path_commands_flips_triangle_traversal() {
+        // The reversed-traversal helper walks each subpath in the
+        // opposite direction. For a triangle (0,0) → (10,0) → (5,10)
+        // → close, the reverse starts at the last vertex and walks
+        // back through the others.
+        let mut tri = Path::new();
+        tri.move_to(Point::new(0.0, 0.0));
+        tri.line_to(Point::new(10.0, 0.0));
+        tri.line_to(Point::new(5.0, 10.0));
+        tri.close();
+        let rev = super::reversed_path_commands(&tri);
+        let pts: Vec<(f32, f32)> =
+            rev.iter()
+                .filter_map(|c| match c {
+                    oxideav_core::PathCommand::MoveTo(pt)
+                    | oxideav_core::PathCommand::LineTo(pt) => Some((pt.x, pt.y)),
+                    _ => None,
+                })
+                .collect();
+        // Reversed: start at (5,10), walk back through (10,0) and
+        // (0,0).
+        assert_eq!(pts, vec![(5.0, 10.0), (10.0, 0.0), (0.0, 0.0)]);
+        // The trailing Close must survive the reversal.
+        assert!(matches!(rev.last(), Some(oxideav_core::PathCommand::Close)));
+    }
+
+    #[test]
+    fn reversed_path_commands_preserves_subpath_count() {
+        // Two disjoint subpaths should both reverse independently.
+        let mut p = Path::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.line_to(Point::new(1.0, 0.0));
+        p.close();
+        p.move_to(Point::new(5.0, 5.0));
+        p.line_to(Point::new(6.0, 5.0));
+        p.close();
+        let rev = super::reversed_path_commands(&p);
+        let move_count = rev
+            .iter()
+            .filter(|c| matches!(c, oxideav_core::PathCommand::MoveTo(_)))
+            .count();
+        let close_count = rev
+            .iter()
+            .filter(|c| matches!(c, oxideav_core::PathCommand::Close))
+            .count();
+        assert_eq!(move_count, 2);
+        assert_eq!(close_count, 2);
     }
 }

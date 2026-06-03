@@ -838,3 +838,140 @@ fn be_and_blur_compose_independently() {
         "\\blur3\\be3 shrank vs \\blur3 alone: blur-only={a_blur} both={a_both}"
     );
 }
+
+// `\iclip(rect)` — inverse rectangular clip. Per the Aegisub
+// override-tag reference, pixels *inside* the rectangle are hidden
+// and pixels outside are kept. The renderer builds a compound
+// outer-then-inner path with opposing winding directions so the
+// rasteriser's NonZero fill rule sees the donut interior — the keep
+// region — as the area outside the cut-out rectangle. The pin
+// (vs. the no-override baseline): a rectangle covering the bottom
+// band where centre-aligned text would normally land must
+// dramatically reduce the rasterised ink mass.
+
+#[test]
+fn iclip_rect_suppresses_ink_inside_the_rectangle() {
+    if load_face().is_none() {
+        return;
+    }
+    // Baseline: centred bottom-band text, no override.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,WIDETEXT\n");
+    // Inverse clip with a wide rectangle covering the bottom band
+    // where the unmasked baseline drops ink. With NonZero fill the
+    // keep region is everything *outside* this rectangle, so almost
+    // all the baseline ink must disappear.
+    let inverse = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\iclip(0,60,320,120)}}WIDETEXT\n"
+    );
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_inv = render_first_frame(&inverse, 320, 120).expect("inverse");
+    let mass_base = alpha_mass(&f_base);
+    let mass_inv = alpha_mass(&f_inv);
+    assert!(mass_base > 0, "baseline produced no ink");
+    // The inverse clip must strictly reduce the ink mass — pixels in
+    // the bottom band get cut out. Allow some baseline ink to remain
+    // outside the rect (the cue's full bounding box may extend
+    // slightly above the rect).
+    assert!(
+        mass_inv < mass_base,
+        "\\iclip(0,60,320,120) did not reduce ink: base={mass_base} iclip={mass_inv}"
+    );
+}
+
+#[test]
+fn iclip_rect_keeps_ink_outside_the_rectangle() {
+    if load_face().is_none() {
+        return;
+    }
+    // A rectangle that covers only a small notch in the *upper*
+    // canvas area where centre-aligned bottom-row text does not
+    // normally land. The inverse-clip's keep region is everything
+    // outside that notch — which includes the entire bottom band
+    // where the cue drops its ink — so the rasterised ink mass
+    // must stay close to the no-override baseline.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,WIDETEXT\n");
+    let inverse = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\iclip(0,0,40,20)}}WIDETEXT\n"
+    );
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_inv = render_first_frame(&inverse, 320, 120).expect("inverse");
+    let mass_base = alpha_mass(&f_base);
+    let mass_inv = alpha_mass(&f_inv);
+    assert!(mass_base > 0, "baseline produced no ink");
+    // The cut-out is far from the text; ink mass should be
+    // essentially unchanged. Allow a small tolerance to account for
+    // AA edge sampling on the outer-ring boundary.
+    let lower = mass_base.saturating_mul(95) / 100;
+    let upper = mass_base.saturating_mul(105) / 100;
+    assert!(
+        mass_inv >= lower && mass_inv <= upper,
+        "out-of-text \\iclip changed ink mass too much: base={mass_base} iclip={mass_inv}"
+    );
+}
+
+#[test]
+fn iclip_drawing_suppresses_ink_inside_the_path() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\iclip(drawing)` — a vector path covering the bottom band
+    // where centre-aligned text lands. The renderer must cut that
+    // region out, leaving most of the baseline ink suppressed.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,WIDETEXT\n");
+    let inverse = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\iclip(m 0 60 l 320 60 l 320 120 l 0 120 c)}}WIDETEXT\n"
+    );
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_inv = render_first_frame(&inverse, 320, 120).expect("inverse");
+    let mass_base = alpha_mass(&f_base);
+    let mass_inv = alpha_mass(&f_inv);
+    assert!(mass_base > 0, "baseline produced no ink");
+    assert!(
+        mass_inv < mass_base,
+        "\\iclip(drawing) did not reduce ink: base={mass_base} iclip={mass_inv}"
+    );
+}
+
+#[test]
+fn clip_wins_over_iclip_when_both_set() {
+    if load_face().is_none() {
+        return;
+    }
+    // The renderer's precedence chain prefers the positive `\clip`
+    // form over the inverse `\iclip` form when both appear on the
+    // same segment, matching the existing "drawing beats rect"
+    // last-set-wins model. A `\clip` covering the text band combined
+    // with an `\iclip` covering the same band should leave the
+    // positive form's keep region intact — i.e. the rasterised
+    // output matches the `\clip(rect)` baseline rather than the
+    // `\iclip(rect)` cut-out (which would have produced ~zero ink).
+    let clip_only = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\clip(0,60,320,120)}}WIDETEXT\n"
+    );
+    let both = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\clip(0,60,320,120)\\iclip(0,60,320,120)}}WIDETEXT\n"
+    );
+
+    let f_clip = render_first_frame(&clip_only, 320, 120).expect("clip-only");
+    let f_both = render_first_frame(&both, 320, 120).expect("both");
+    let mass_clip = alpha_mass(&f_clip);
+    let mass_both = alpha_mass(&f_both);
+
+    // The positive `\clip` form keeps ink inside the rect; the
+    // inverse would have removed it. The "clip wins" rule means the
+    // ink mass with both set must stay close to the clip-only mass
+    // — definitely not approaching zero.
+    assert!(
+        mass_both > 0,
+        "\\clip + \\iclip cleared all ink — \\iclip should not win"
+    );
+    let lower = mass_clip.saturating_mul(80) / 100;
+    let upper = mass_clip.saturating_mul(120) / 100;
+    assert!(
+        mass_both >= lower && mass_both <= upper,
+        "expected \\clip to win when both set: clip={mass_clip} both={mass_both}"
+    );
+}

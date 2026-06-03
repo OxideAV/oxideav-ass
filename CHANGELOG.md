@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AnimatedRenderedDecoder` now bakes the typed `\iclip(rect)` and
+  `\iclip(drawing)` inverse-clip overrides into the rasterised
+  output. The renderer constructs a compound clip path with an
+  outer ring well past the canvas (`[-canvas, +2 * canvas]` in
+  script coordinates so any reasonable animation transform leaves
+  the viewport inside it) followed by the inverse subpath in
+  reverse traversal direction; the rasteriser's NonZero fill rule
+  then sees the area *outside* the cut-out as the keep region,
+  matching the Aegisub override-tag reference's "the cue is hidden
+  *inside* the rectangle / path" semantics. The reverse-traversal
+  builder handles each subpath independently: `LineTo` segments
+  swap endpoints, `QuadCurveTo` keeps the same control point and
+  swaps endpoints, `CubicCurveTo` swaps both control points and
+  endpoints (so the curve passes through the same points in the
+  opposite direction), and trailing `Close` markers stay where
+  they were. The clip-precedence chain is `\clip(drawing)` →
+  `\clip(rect)` → `\iclip(drawing)` → `\iclip(rect)`; when both a
+  positive `\clip` and an inverse `\iclip` appear on the same
+  segment the positive form wins, mirroring the existing
+  "last-set-wins" override model — the Aegisub spec describes each
+  form independently and does not pin a co-occurrence rule.
+  `RenderState::iclip_rect` and `iclip_drawing` were already
+  populated by the typed extractor; this commit wires them into
+  the rasterisation step. New integration tests in
+  `tests/render.rs`: `\iclip(0,60,320,120)` on centre-aligned
+  bottom-band text reduces ink mass below the no-override
+  baseline; `\iclip(0,0,40,20)` cutting a notch in the *upper*
+  canvas (well clear of the text) leaves ink mass within ±5% of
+  the baseline; `\iclip(m 0 60 l 320 60 l 320 120 l 0 120 c)`
+  (drawing form covering the same bottom band) also reduces ink
+  mass; and `\clip(0,60,320,120)\iclip(0,60,320,120)` on the same
+  segment keeps the `\clip` keep region (ink mass within ±20% of
+  the `\clip`-only mass — definitely not approaching zero, which
+  is what the inverse form alone would have produced). New unit
+  tests in `render.rs` pin the compound-path layout (outer ring at
+  indices 0..5, inner ring at 5..10, outer-ring extents at
+  `(-w, -h)..=(2w, 2h)` with a `0×0`-canvas fallback to a 1-unit
+  square so the rasteriser gets a non-empty outer ring); the
+  reverse-traversal helper's behaviour on a triangle (start at the
+  last vertex, walk back through the others, trailing `Close`
+  survives); and the subpath-count preservation on a two-subpath
+  input.
+
 - `AnimatedRenderedDecoder` now bakes the typed `\be<strength>`
   iterative box-blur into the rasterised RGBA buffer as a post-step,
   running after the `\blur` Gaussian step. Per the Aegisub override-tag
