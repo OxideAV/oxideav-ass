@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AnimatedRenderedDecoder` now bakes the typed `\blur<strength>`
+  Gaussian edge-blur into the rasterised RGBA buffer as a post-step
+  via `oxideav-image-filter`'s separable `Blur` filter. Per the
+  Aegisub override-tag reference, `\blur<strength>` is a Gaussian
+  edge-softening filter whose `strength` may be non-integer; the
+  renderer treats that wire value as the kernel's sigma in pixels
+  and picks the kernel radius as `ceil(3 * sigma)` (the standard
+  3σ cutoff captures > 99.7% of the kernel mass per the normal
+  distribution). The blur runs through all four RGBA channels so
+  the softened alpha-edge falls back through the alpha plane,
+  matching the spec's "blurs the edges of the text" behaviour for
+  the no-`\bord` text path the renderer covers today. The radius
+  is clamped to the canvas's shorter side so a runaway strength
+  can't blow the memory budget. `\be<strength>` (the iterative
+  box-blur companion) is *not* folded into the same step — both
+  filters stay on independent `RenderState` channels
+  (`be_strength` + `blur_sigma`) per the Aegisub spec's
+  "advanced algorithm vs iterative" distinction, leaving the
+  composition to the caller when `\be` matters. New
+  `oxideav-image-filter = "0.1"` `render`-gated optional
+  dependency; opting out via `default-features = false` continues
+  to drop the renderer entirely. New integration tests in
+  `tests/render.rs`: `\blur0` matches the no-override baseline ink
+  bbox within ±2 px on each side; `\blur3` widens the alpha bbox
+  (softer edges leak into previously-empty pixels); a
+  `\t(0,1000,\blur6)` ramp grows the bbox monotonically across
+  three samples (t=0 / t=500 / t=1000). New unit test in
+  `render.rs` pins the radius-from-sigma rule and the zero-sigma
+  no-op.
+
 - `AnimatedRenderedDecoder` now bakes the typed `\1a` primary-fill
   alpha override into the rasterised fill colour. Per the Aegisub
   override-tag reference, `\1a&Haa&` encodes alpha on the

@@ -206,8 +206,20 @@ What the parser understands and preserves on round-trip:
   cue-level `\fad` / `\fade` envelope stays on the animation
   `Group`'s `opacity` — the two compose multiplicatively per the
   formula `final_primary_alpha = primary_alpha.unwrap_or(style) *
-  alpha_mul` documented on `RenderState::primary_alpha`. Opt out
-  via `default-features = false`.
+  alpha_mul` documented on `RenderState::primary_alpha`. The
+  `\blur<strength>` Gaussian edge-blur is applied as a post-step
+  on the rasterised RGBA buffer via `oxideav-image-filter::Blur`:
+  the wire `strength` is treated as the Gaussian sigma (in pixels,
+  non-integer per the Aegisub spec), the separable-kernel radius
+  is picked as `ceil(3 * sigma)` (3σ cutoff captures > 99.7% of
+  the kernel mass), and the blur runs through all four RGBA
+  channels — so the softened glyph edges land back via alpha,
+  matching the spec's "blurs the edges of the text" effect for the
+  no-`\bord` text path the renderer covers today. `\be`'s
+  iterative box-blur strength still surfaces on
+  `RenderState::be_strength` independently and is left for the
+  caller to compose if needed. Opt out via
+  `default-features = false`.
 - `\N` hard line break, `\h` hard space, `\n` soft break.
 - ASS timestamp format `H:MM:SS.cc` (centiseconds).
 - Commas inside the `Text` field are preserved (the CSV splitter stops
@@ -218,10 +230,13 @@ Out of scope for this crate:
 - `[Fonts]` / `[Graphics]` UU-encoded attachment payloads are kept as
   opaque bytes (round-tripped verbatim via extradata) — the parser
   does not decode the embedded font / image data into typed objects.
-- Gaussian blur (`\blur`) post-step is not applied by the
-  `AnimatedRenderedDecoder` — `RenderState::blur_sigma` is exposed,
-  feed it into `oxideav-image-filter::blur` if you need the visual
-  effect.
+- `\be<strength>` iterative box-blur is parsed and exposed on
+  `RenderState::be_strength` but not yet baked into the
+  `AnimatedRenderedDecoder`; compose it on the rasterised RGBA
+  buffer if you need the effect. `\blur<strength>` (the Gaussian
+  companion) *is* applied by the renderer; the two filters are
+  kept on separate channels per the Aegisub spec rather than being
+  merged into one blur term.
 - 3D `\frx` / `\fry` rotations are reduced to a 2D affine via the
   orthographic small-angle approximation (axis-aligned `cos(α)`
   shrink), not a full perspective camera. Most subtitle use rotates

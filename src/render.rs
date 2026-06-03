@@ -31,6 +31,18 @@
 //!      `\clip(drawing)` is active, the drawing-path parsed by
 //!      [`crate::drawing::parse_drawing`].
 //! 5. Rasterise via [`oxideav_raster::Renderer`].
+//! 6. If `RenderState::blur_sigma > 0`, post-process the RGBA buffer
+//!    through a separable Gaussian blur from
+//!    [`oxideav_image_filter::Blur`]. The Aegisub override-tag
+//!    reference describes `\blur<strength>` as a Gaussian edge-blur
+//!    whose `strength` is non-integer — we treat that wire value as
+//!    the kernel's sigma in pixels and pick the kernel radius as
+//!    `ceil(3 * sigma)` (a 3σ cutoff captures > 99.7% of the kernel
+//!    mass per the standard normal distribution). The blur runs on
+//!    the rasterised RGBA buffer including the alpha channel so the
+//!    softened edges land back through alpha — matching the spec's
+//!    "blurs the edges of the text" behaviour for the no-border case
+//!    the renderer covers today.
 //!
 //! The returned `Frame::Video` carries the cue's `start_us` as PTS.
 
@@ -365,7 +377,68 @@ impl AnimatedRenderedDecoder {
             let want = n.min(plane.data.len()).min(buf.len());
             buf[..want].copy_from_slice(&plane.data[..want]);
         }
+
+        // Gaussian blur post-step (`\blur<strength>`). The Aegisub
+        // override-tag reference describes the strength as the
+        // Gaussian sigma (non-integer allowed). We pick the kernel
+        // radius as `ceil(3 * sigma)` — the standard 3σ cutoff that
+        // captures > 99.7% of the kernel mass — and clamp it to the
+        // canvas's shorter side so a runaway value can't blow the
+        // memory budget. `\be` is the iterative box-blur companion
+        // and stays a separate channel on `RenderState`; renderers
+        // wanting both should compose `\be` themselves (the
+        // strength_count loop is one Box / equiv-radius pass each).
+        if state.blur_sigma > 0.0 {
+            apply_blur_post(&mut buf, self.width, self.height, state.blur_sigma);
+        }
+
         wrap_buf(buf, self.width, cue.start_us)
+    }
+}
+
+/// Run `oxideav-image-filter`'s separable Gaussian blur over the
+/// rasterised RGBA buffer in place. See [`AnimatedRenderedDecoder`]'s
+/// module-level pipeline notes (step 6) for the strength-to-sigma
+/// mapping the Aegisub spec calls for.
+fn apply_blur_post(buf: &mut [u8], width: u32, height: u32, sigma: f32) {
+    // Empty canvas → nothing to blur. Belt-and-braces: the caller
+    // already gates on `sigma > 0`, but the filter would also no-op
+    // on a 0×0 canvas — keep the early return so we don't allocate a
+    // VideoFrame for nothing.
+    if width == 0 || height == 0 {
+        return;
+    }
+    let expected = (width as usize) * (height as usize) * 4;
+    if buf.len() < expected {
+        return;
+    }
+    let raw_radius = (3.0 * sigma).ceil() as i64;
+    let max_radius = (width.min(height) / 2).max(1) as i64;
+    let radius = raw_radius.clamp(1, max_radius) as u32;
+
+    let input = oxideav_core::VideoFrame {
+        pts: None,
+        planes: vec![oxideav_core::VideoPlane {
+            stride: (width as usize) * 4,
+            data: buf[..expected].to_vec(),
+        }],
+    };
+    let params = oxideav_image_filter::VideoStreamParams {
+        format: oxideav_core::PixelFormat::Rgba,
+        width,
+        height,
+    };
+    let filter = oxideav_image_filter::Blur::new(radius).with_sigma(sigma);
+    if let Ok(out) = oxideav_image_filter::ImageFilter::apply(&filter, &input, params) {
+        if let Some(plane) = out.planes.first() {
+            // The Blur filter ships a tight-stride output (= width *
+            // bpp), so copy row-by-row only if its stride differs
+            // from our canvas's tight stride. They match for the
+            // RGBA full-resolution single-plane case, so the fast
+            // path here is one straight copy.
+            let want = expected.min(plane.data.len());
+            buf[..want].copy_from_slice(&plane.data[..want]);
+        }
     }
 }
 
@@ -780,6 +853,68 @@ mod tests {
         // Smoke check.
         let c = dummy_cue();
         assert_eq!(collect_visible_text(&c.segments), "hi");
+    }
+
+    #[test]
+    fn blur_post_step_no_ops_when_radius_clamp_yields_zero_canvas() {
+        // 0×0 canvas — the helper must early-out without touching the
+        // buffer (its assertion is "no panic, no allocation"). Use a
+        // small dummy buffer so a debug build still flags an OOB read.
+        let mut buf = vec![0u8; 16];
+        let before = buf.clone();
+        super::apply_blur_post(&mut buf, 0, 0, 4.0);
+        assert_eq!(buf, before, "blur post-step touched a 0×0 buffer");
+    }
+
+    #[test]
+    fn blur_post_step_short_buffer_is_no_op() {
+        // Buffer shorter than width * height * 4 — the helper must not
+        // touch it (defensive against a caller passing the wrong
+        // canvas pair). The frame's contract is "stride = width*4",
+        // so a short buffer is genuinely a bug, but the helper should
+        // not paper over it by reading past the end.
+        let mut buf = vec![0u8; 8]; // way smaller than 4*4*4 = 64
+        let before = buf.clone();
+        super::apply_blur_post(&mut buf, 4, 4, 1.5);
+        assert_eq!(buf, before, "blur post-step touched a too-short buffer");
+    }
+
+    #[test]
+    fn blur_post_step_softens_a_hard_edge() {
+        // Construct a 16×8 RGBA buffer with a vertical hard edge —
+        // left half opaque white, right half fully transparent. After
+        // the Gaussian post-step the alpha along the seam should
+        // smear across the boundary so the middle two columns pick up
+        // some alpha. This pins the "blur > 0 actually mutates the
+        // alpha plane" half of the contract independent of the full
+        // renderer path tested in the integration suite.
+        let w = 16u32;
+        let h = 8u32;
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                if x < w / 2 {
+                    buf[i] = 255;
+                    buf[i + 1] = 255;
+                    buf[i + 2] = 255;
+                    buf[i + 3] = 255;
+                }
+                // right half stays at zeros.
+            }
+        }
+        let before = buf.clone();
+        super::apply_blur_post(&mut buf, w, h, 1.5);
+        // The seam column on the right (x = w/2) was 0 alpha; after
+        // the blur it should pick up some alpha from the left
+        // neighbours.
+        let mid = ((3 * w + w / 2) * 4 + 3) as usize;
+        assert!(
+            buf[mid] > 0,
+            "expected seam pixel alpha > 0 after blur, got {}",
+            buf[mid]
+        );
+        assert_ne!(buf, before, "blur with sigma=1.5 was a no-op");
     }
 
     #[test]

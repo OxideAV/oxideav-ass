@@ -634,3 +634,114 @@ fn primary_alpha_compounds_with_fad_envelope() {
         "fade-in at t=0 must produce no ink even with \\1a&H80&"
     );
 }
+
+#[test]
+fn blur_zero_matches_baseline_bbox() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\blur0` is the "off" form of the Gaussian post-step per the
+    // Aegisub spec ("Set strength to 0 (zero) to disable the
+    // effect"). The renderer should therefore behave like the
+    // baseline cue — the ink-extent bbox must match within a couple
+    // of edge pixels (the renderer does no AA work either way, so
+    // the bbox is genuinely identical up to glyph layout
+    // determinism).
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,BLUR\n");
+    let zero =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\blur0}}BLUR\n");
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_zero = render_first_frame(&zero, 320, 120).expect("zero");
+    let bbox_base = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let bbox_zero = alpha_bbox(&f_zero, 320).expect("zero ink");
+
+    let dx0 = (bbox_zero.0 as i32 - bbox_base.0 as i32).abs();
+    let dy0 = (bbox_zero.1 as i32 - bbox_base.1 as i32).abs();
+    let dx1 = (bbox_zero.2 as i32 - bbox_base.2 as i32).abs();
+    let dy1 = (bbox_zero.3 as i32 - bbox_base.3 as i32).abs();
+    assert!(
+        dx0 <= 2 && dy0 <= 2 && dx1 <= 2 && dy1 <= 2,
+        "blur=0 changed the bbox: base={bbox_base:?} zero={bbox_zero:?}"
+    );
+}
+
+#[test]
+fn blur_widens_ink_bbox() {
+    if load_face().is_none() {
+        return;
+    }
+    // A nonzero Gaussian sigma softens the glyph edges so previously
+    // empty pixels around the silhouette pick up some alpha. The
+    // alpha bbox must therefore grow on at least one side compared
+    // to the baseline. We use a generous sigma (3.0) and a 120-tall
+    // canvas with side margins so the blurred edge has room to
+    // spread without bumping the canvas border.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,BLUR\n");
+    let blurred =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\blur3}}BLUR\n");
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_blur = render_first_frame(&blurred, 320, 120).expect("blurred");
+    let bbox_base = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let bbox_blur = alpha_bbox(&f_blur, 320).expect("blurred ink");
+
+    // Width / height — at least one axis must grow by 2+ pixels.
+    let w_base = bbox_base.2 - bbox_base.0;
+    let h_base = bbox_base.3 - bbox_base.1;
+    let w_blur = bbox_blur.2 - bbox_blur.0;
+    let h_blur = bbox_blur.3 - bbox_blur.1;
+    assert!(
+        w_blur >= w_base + 2 || h_blur >= h_base + 2,
+        "blur did not widen the alpha bbox: base wh=({w_base},{h_base}) blur wh=({w_blur},{h_blur})"
+    );
+}
+
+#[test]
+fn blur_t_animation_grows_bbox_monotonically() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\t(0, 1000, \blur6)` ramps the Gaussian strength linearly from
+    // 0 to 6 across the cue's 1-second lifetime. Sampling at t = 0 /
+    // 500 / 1000 ms therefore exercises three distinct sigmas
+    // (0 → 3 → 6) — the alpha bbox should grow at every step rather
+    // than collapsing back at any point.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\t(0,1000,\\blur6)}}BLUR\n"
+    );
+    let face = load_face().expect("face");
+    let inner = build_decoder(&src);
+    let mut dec = AnimatedRenderedDecoder::new(inner, 320, 120, face);
+
+    dec.set_offset_ms(0);
+    let f0 = dec.receive_frame().expect("t=0");
+    let bbox0 = alpha_bbox(&f0, 320).expect("ink at t=0");
+
+    dec.set_offset_ms(500);
+    let f1 = dec.receive_frame().expect("t=500");
+    let bbox1 = alpha_bbox(&f1, 320).expect("ink at t=500");
+
+    dec.set_offset_ms(1000);
+    let f2 = dec.receive_frame().expect("t=1000");
+    let bbox2 = alpha_bbox(&f2, 320).expect("ink at t=1000");
+
+    let w = |b: (u32, u32, u32, u32)| b.2.saturating_sub(b.0);
+    let h = |b: (u32, u32, u32, u32)| b.3.saturating_sub(b.1);
+    let area = |b: (u32, u32, u32, u32)| (w(b) as u64) * (h(b) as u64);
+    let a0 = area(bbox0);
+    let a1 = area(bbox1);
+    let a2 = area(bbox2);
+    assert!(
+        a1 >= a0,
+        "blur ramp t=0 → t=500 did not grow bbox area: a0={a0} a1={a1}"
+    );
+    assert!(
+        a2 >= a1,
+        "blur ramp t=500 → t=1000 did not grow bbox area: a1={a1} a2={a2}"
+    );
+    assert!(
+        a2 > a0,
+        "blur ramp t=0 → t=1000 did not net-grow bbox area: a0={a0} a2={a2}"
+    );
+}
