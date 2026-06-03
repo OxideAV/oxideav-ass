@@ -745,3 +745,96 @@ fn blur_t_animation_grows_bbox_monotonically() {
         "blur ramp t=0 → t=1000 did not net-grow bbox area: a0={a0} a2={a2}"
     );
 }
+
+#[test]
+fn be_zero_matches_baseline_bbox() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\be0` is the "off" form of the iterative box-blur post-step
+    // per the Aegisub spec ("0 disables the effect"). The renderer
+    // should therefore behave like the baseline cue — the ink-extent
+    // bbox must match within a couple of edge pixels (the renderer
+    // does no AA work either way, so the bbox is genuinely identical
+    // up to glyph layout determinism).
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,BE\n");
+    let zero = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\be0}}BE\n");
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_zero = render_first_frame(&zero, 320, 120).expect("zero");
+    let bbox_base = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let bbox_zero = alpha_bbox(&f_zero, 320).expect("zero ink");
+
+    let dx0 = (bbox_zero.0 as i32 - bbox_base.0 as i32).abs();
+    let dy0 = (bbox_zero.1 as i32 - bbox_base.1 as i32).abs();
+    let dx1 = (bbox_zero.2 as i32 - bbox_base.2 as i32).abs();
+    let dy1 = (bbox_zero.3 as i32 - bbox_base.3 as i32).abs();
+    assert!(
+        dx0 <= 2 && dy0 <= 2 && dx1 <= 2 && dy1 <= 2,
+        "\\be0 changed the bbox: base={bbox_base:?} zero={bbox_zero:?}"
+    );
+}
+
+#[test]
+fn be_widens_ink_bbox() {
+    if load_face().is_none() {
+        return;
+    }
+    // A positive `\be` strength spreads the glyph silhouette through
+    // the alpha channel, so the alpha bbox must grow on at least one
+    // axis compared to the baseline. We use a strength of 4
+    // iterations (the 1-pixel-radius box has an N-pixel radius of
+    // influence over N passes) and a 120-tall canvas with side
+    // margins so the softened edges have room to spread without
+    // bumping the canvas border.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,BE\n");
+    let blurred =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\be4}}BE\n");
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_be = render_first_frame(&blurred, 320, 120).expect("blurred");
+    let bbox_base = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let bbox_be = alpha_bbox(&f_be, 320).expect("blurred ink");
+
+    // Width / height — at least one axis must grow by 2+ pixels.
+    let w_base = bbox_base.2 - bbox_base.0;
+    let h_base = bbox_base.3 - bbox_base.1;
+    let w_be = bbox_be.2 - bbox_be.0;
+    let h_be = bbox_be.3 - bbox_be.1;
+    assert!(
+        w_be >= w_base + 2 || h_be >= h_base + 2,
+        "\\be did not widen the alpha bbox: base wh=({w_base},{h_base}) be wh=({w_be},{h_be})"
+    );
+}
+
+#[test]
+fn be_and_blur_compose_independently() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\blur` (Gaussian) and `\be` (iterative box) sit on independent
+    // channels of `RenderState`. When both are set the renderer must
+    // run *both* post-steps; the resulting ink bbox should be at
+    // least as wide as either filter alone (each one strictly grows
+    // the alpha silhouette). The pin: `(blur=3, be=3)` produces a
+    // bbox area no smaller than `(blur=3, be=0)`'s — a mild guard
+    // against a future regression where one post-step overwrites the
+    // other's working buffer at the wrong stride.
+    let only_blur =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\blur3}}BLUR\n");
+    let both =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\blur3\\be3}}BLUR\n");
+
+    let f_blur = render_first_frame(&only_blur, 320, 120).expect("blur-only");
+    let f_both = render_first_frame(&both, 320, 120).expect("blur+be");
+    let bbox_blur = alpha_bbox(&f_blur, 320).expect("blur-only ink");
+    let bbox_both = alpha_bbox(&f_both, 320).expect("both ink");
+
+    let area = |b: (u32, u32, u32, u32)| (b.2 - b.0) as u64 * (b.3 - b.1) as u64;
+    let a_blur = area(bbox_blur);
+    let a_both = area(bbox_both);
+    assert!(
+        a_both >= a_blur,
+        "\\blur3\\be3 shrank vs \\blur3 alone: blur-only={a_blur} both={a_both}"
+    );
+}

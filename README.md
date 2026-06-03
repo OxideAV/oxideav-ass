@@ -216,10 +216,13 @@ What the parser understands and preserves on round-trip:
   channels — so the softened glyph edges land back via alpha,
   matching the spec's "blurs the edges of the text" effect for the
   no-`\bord` text path the renderer covers today. `\be`'s
-  iterative box-blur strength still surfaces on
-  `RenderState::be_strength` independently and is left for the
-  caller to compose if needed. Opt out via
-  `default-features = false`.
+  iterative box-blur strength is baked in as an N-pass 3×3 separable
+  box average over the rasterised RGBA buffer (including alpha; runs
+  *after* the `\blur` Gaussian step), matching the Aegisub spec's
+  "regular effect, repeated `strength` times" definition. The two
+  filters stay on independent `RenderState` channels (`blur_sigma`
+  + `be_strength`) per the spec's "more advanced algorithm vs
+  iterative" distinction. Opt out via `default-features = false`.
 - `\N` hard line break, `\h` hard space, `\n` soft break.
 - ASS timestamp format `H:MM:SS.cc` (centiseconds).
 - Commas inside the `Text` field are preserved (the CSV splitter stops
@@ -230,13 +233,10 @@ Out of scope for this crate:
 - `[Fonts]` / `[Graphics]` UU-encoded attachment payloads are kept as
   opaque bytes (round-tripped verbatim via extradata) — the parser
   does not decode the embedded font / image data into typed objects.
-- `\be<strength>` iterative box-blur is parsed and exposed on
-  `RenderState::be_strength` but not yet baked into the
-  `AnimatedRenderedDecoder`; compose it on the rasterised RGBA
-  buffer if you need the effect. `\blur<strength>` (the Gaussian
-  companion) *is* applied by the renderer; the two filters are
-  kept on separate channels per the Aegisub spec rather than being
-  merged into one blur term.
+- (None on the blur axis — both `\blur<strength>` and `\be<strength>`
+  are baked into the `AnimatedRenderedDecoder`; the two filters stay
+  on separate channels per the Aegisub spec rather than being merged
+  into one blur term.)
 - 3D `\frx` / `\fry` rotations are reduced to a 2D affine via the
   orthographic small-angle approximation (axis-aligned `cos(α)`
   shrink), not a full perspective camera. Most subtitle use rotates

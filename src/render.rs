@@ -8,8 +8,8 @@
 //! [`crate::CueAnimation::evaluate_at`]: callers can step the
 //! `eval_offset_ms` field between calls to get a series of frames that
 //! reflect the `\t` / `\fad` / `\move` / `\frx` / `\fry` / `\frz` /
-//! `\fax` / `\fay` / `\clip` overrides at successive moments in the
-//! cue's lifetime.
+//! `\fax` / `\fay` / `\blur` / `\be` / `\clip` overrides at successive
+//! moments in the cue's lifetime.
 //!
 //! Pipeline (per `receive_frame`):
 //!
@@ -43,6 +43,20 @@
 //!    softened edges land back through alpha — matching the spec's
 //!    "blurs the edges of the text" behaviour for the no-border case
 //!    the renderer covers today.
+//! 7. If `RenderState::be_strength > 0`, post-process the RGBA buffer
+//!    again with `N` iterations of a 3×3 box-blur. Per the Aegisub
+//!    override-tag reference, `\be<strength>` is *"the number of times
+//!    to apply the regular effect"* — a separable 1-pixel-radius box
+//!    average. The renderer runs the box pass through all four RGBA
+//!    channels (including alpha) so the softened silhouette falls
+//!    back through alpha for the no-border text case, matching the
+//!    spec's *"blurs the edges of the text"* behaviour and pairing
+//!    with the Gaussian `\blur` step that runs first. The two filters
+//!    stay on independent channels per the reference's *"more advanced
+//!    algorithm vs iterative"* distinction; composing them in this
+//!    fixed Gaussian-then-iterative order matches the order an author
+//!    typically reads them as a final touch-up rather than an explicit
+//!    spec ordering (none is given).
 //!
 //! The returned `Frame::Video` carries the cue's `start_us` as PTS.
 
@@ -392,6 +406,22 @@ impl AnimatedRenderedDecoder {
             apply_blur_post(&mut buf, self.width, self.height, state.blur_sigma);
         }
 
+        // Iterative box-blur post-step (`\be<strength>`). Per the
+        // Aegisub override-tag reference, strength is the number of
+        // times to apply the "regular" softening — a separable
+        // 1-pixel-radius box average. Running it after the Gaussian
+        // pass lets the two filters compose without either stomping
+        // the other's working buffer; the renderer chooses this order
+        // because the spec does not pin one but `\be` reads as a final
+        // mild touch-up rather than a primary edge-softener at the
+        // strengths the reference describes as "isn't always very
+        // visible". The box pass touches all four RGBA channels so the
+        // softened silhouette falls back through alpha, matching the
+        // spec's no-border "blurs the edges of the text" behaviour.
+        if state.be_strength > 0 {
+            apply_be_post(&mut buf, self.width, self.height, state.be_strength);
+        }
+
         wrap_buf(buf, self.width, cue.start_us)
     }
 }
@@ -438,6 +468,81 @@ fn apply_blur_post(buf: &mut [u8], width: u32, height: u32, sigma: f32) {
             // path here is one straight copy.
             let want = expected.min(plane.data.len());
             buf[..want].copy_from_slice(&plane.data[..want]);
+        }
+    }
+}
+
+/// Apply `N` iterations of a separable 1-pixel-radius box blur to the
+/// rasterised RGBA buffer in place — the renderer's `\be<strength>`
+/// post-step. Each iteration is one horizontal then one vertical
+/// 3-tap uniform mean (kernel `[1, 1, 1] / 3`), with edge samples
+/// clamped to the nearest in-bounds pixel. All four channels including
+/// alpha are blurred so the softened glyph silhouette lands back via
+/// the alpha plane.
+///
+/// The repeated 1-pixel-radius pass is the "regular" softening the
+/// Aegisub override-tag reference repeats `strength` times. We use a
+/// uniform box rather than the `[1, 2, 1] / 4` variant because the
+/// spec text reads as a basic box ("the iterative box-blur companion"
+/// to the "more advanced" Gaussian `\blur`), and the [1, 2, 1] form
+/// would converge to a Gaussian — overlapping `\blur`'s job.
+///
+/// Strength is `u8` to match `RenderState::be_strength`. Each
+/// iteration costs `O(width * height * channels)`, so very large
+/// values do degrade quickly; the spec itself warns *"at high values
+/// the effect de-generates into nothingness, and generally isn't very
+/// useful"*. We don't cap the strength here — the wire decoder already
+/// clamps to `u8` and the cost is linear in the strength.
+fn apply_be_post(buf: &mut [u8], width: u32, height: u32, strength: u8) {
+    if width == 0 || height == 0 || strength == 0 {
+        return;
+    }
+    let expected = (width as usize) * (height as usize) * 4;
+    if buf.len() < expected {
+        return;
+    }
+    let w = width as usize;
+    let h = height as usize;
+    let row = w * 4;
+    let mut scratch = vec![0u8; expected];
+    for _ in 0..strength {
+        // Pass 1: horizontal 3-tap box into scratch.
+        for y in 0..h {
+            let src_row = &buf[y * row..(y + 1) * row];
+            let dst_row = &mut scratch[y * row..(y + 1) * row];
+            for x in 0..w {
+                let xl = x.saturating_sub(1);
+                let xr = (x + 1).min(w - 1);
+                for ch in 0..4 {
+                    let a = src_row[xl * 4 + ch] as u32;
+                    let b = src_row[x * 4 + ch] as u32;
+                    let c = src_row[xr * 4 + ch] as u32;
+                    // (a + b + c + 1) / 3 — round-to-nearest with a +1
+                    // bias on the divisor's edge of the rounding range.
+                    // Plain integer division here is fine for a "subtle
+                    // softening" but biases the result slightly down;
+                    // the +1 keeps the mean centred so a constant patch
+                    // is preserved exactly (3*v + 1)/3 == v.
+                    dst_row[x * 4 + ch] = ((a + b + c + 1) / 3) as u8;
+                }
+            }
+        }
+        // Pass 2: vertical 3-tap box back into buf.
+        for y in 0..h {
+            let yu = y.saturating_sub(1);
+            let yd = (y + 1).min(h - 1);
+            let up_row = &scratch[yu * row..(yu + 1) * row];
+            let mid_row = &scratch[y * row..(y + 1) * row];
+            let dn_row = &scratch[yd * row..(yd + 1) * row];
+            let dst_row = &mut buf[y * row..(y + 1) * row];
+            for x in 0..w {
+                for ch in 0..4 {
+                    let a = up_row[x * 4 + ch] as u32;
+                    let b = mid_row[x * 4 + ch] as u32;
+                    let c = dn_row[x * 4 + ch] as u32;
+                    dst_row[x * 4 + ch] = ((a + b + c + 1) / 3) as u8;
+                }
+            }
         }
     }
 }
@@ -915,6 +1020,138 @@ mod tests {
             buf[mid]
         );
         assert_ne!(buf, before, "blur with sigma=1.5 was a no-op");
+    }
+
+    #[test]
+    fn be_post_step_no_ops_on_zero_strength() {
+        // strength = 0 must leave the buffer untouched.
+        let mut buf = vec![0u8; 4 * 4 * 4];
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(7);
+        }
+        let before = buf.clone();
+        super::apply_be_post(&mut buf, 4, 4, 0);
+        assert_eq!(buf, before, "\\be0 post-step mutated the buffer");
+    }
+
+    #[test]
+    fn be_post_step_no_ops_on_zero_canvas() {
+        // 0×W or H×0 — the helper must early-out even with a non-zero
+        // strength.
+        let mut buf = vec![0u8; 16];
+        let before = buf.clone();
+        super::apply_be_post(&mut buf, 0, 0, 5);
+        assert_eq!(buf, before, "\\be on a 0×0 canvas mutated the buffer");
+    }
+
+    #[test]
+    fn be_post_step_short_buffer_is_no_op() {
+        // Buffer shorter than width * height * 4 — defensive guard.
+        let mut buf = vec![0u8; 8]; // way smaller than 4*4*4 = 64
+        let before = buf.clone();
+        super::apply_be_post(&mut buf, 4, 4, 3);
+        assert_eq!(buf, before, "\\be touched a too-short buffer");
+    }
+
+    #[test]
+    fn be_post_step_preserves_constant_canvas() {
+        // A canvas of a single uniform colour must be a fixed point of
+        // the box pass: every 3-tap window samples the same value, so
+        // the rounded mean is exactly that value. Confirms the +1
+        // bias in `(a+b+c+1)/3` keeps a constant patch invariant.
+        let mut buf = vec![0u8; 8 * 6 * 4];
+        for px in buf.chunks_exact_mut(4) {
+            px[0] = 200;
+            px[1] = 100;
+            px[2] = 50;
+            px[3] = 255;
+        }
+        let before = buf.clone();
+        super::apply_be_post(&mut buf, 8, 6, 4);
+        assert_eq!(buf, before, "\\be eroded a constant canvas");
+    }
+
+    #[test]
+    fn be_post_step_softens_a_hard_edge() {
+        // Construct a 16×8 RGBA buffer with a vertical hard edge —
+        // left half opaque white, right half fully transparent. After
+        // one \be iteration the alpha column on the right side of the
+        // seam must pick up some alpha (the pass averages a 3-pixel
+        // window, two of which are 0 alpha and one of which is 255 →
+        // ~85 alpha).
+        let w = 16u32;
+        let h = 8u32;
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                if x < w / 2 {
+                    buf[i] = 255;
+                    buf[i + 1] = 255;
+                    buf[i + 2] = 255;
+                    buf[i + 3] = 255;
+                }
+                // right half stays at zeros.
+            }
+        }
+        let before = buf.clone();
+        super::apply_be_post(&mut buf, w, h, 1);
+        // The first transparent column (x = w/2) now sees the
+        // last opaque column as one of its three neighbours and
+        // picks up alpha; pin it to "strictly greater than zero".
+        let seam = ((3 * w + w / 2) * 4 + 3) as usize;
+        assert!(
+            buf[seam] > 0,
+            "expected seam pixel alpha > 0 after \\be1, got {}",
+            buf[seam]
+        );
+        assert_ne!(buf, before, "\\be1 was a no-op");
+    }
+
+    #[test]
+    fn be_post_step_more_iterations_spread_alpha_further() {
+        // Two iterations on the same vertical-edge canvas must spread
+        // the alpha at least one column further than a single
+        // iteration — the 3-tap pass has a 1-pixel radius per
+        // iteration, so N iterations have an N-pixel radius of
+        // influence (plus the small +1 rounding leak). Pin that
+        // monotonicity so a future regression that, e.g., copies
+        // scratch back to buf at the wrong stride is caught.
+        let w = 24u32;
+        let h = 4u32;
+        let make = || {
+            let mut b = vec![0u8; (w * h * 4) as usize];
+            for y in 0..h {
+                for x in 0..w {
+                    let i = ((y * w + x) * 4) as usize;
+                    if x < w / 2 {
+                        b[i] = 255;
+                        b[i + 1] = 255;
+                        b[i + 2] = 255;
+                        b[i + 3] = 255;
+                    }
+                }
+            }
+            b
+        };
+        let mut one = make();
+        let mut two = make();
+        super::apply_be_post(&mut one, w, h, 1);
+        super::apply_be_post(&mut two, w, h, 2);
+        let count = |buf: &[u8]| -> u32 {
+            (0..w)
+                .filter(|x| {
+                    let i = ((w + x) * 4 + 3) as usize;
+                    buf[i] > 0
+                })
+                .count() as u32
+        };
+        let c1 = count(&one);
+        let c2 = count(&two);
+        assert!(
+            c2 > c1,
+            "expected more iterations to spread alpha further: c1={c1} c2={c2}"
+        );
     }
 
     #[test]

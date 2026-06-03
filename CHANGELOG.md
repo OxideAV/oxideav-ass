@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AnimatedRenderedDecoder` now bakes the typed `\be<strength>`
+  iterative box-blur into the rasterised RGBA buffer as a post-step,
+  running after the `\blur` Gaussian step. Per the Aegisub override-tag
+  reference, `\be<N>` is "the number of times to apply the regular
+  effect" — a separable 1-pixel-radius 3×3 box average; the renderer
+  iterates that pass `N` times over all four RGBA channels including
+  alpha, so the softened glyph silhouette falls back through the alpha
+  plane for the no-`\bord` text path the renderer covers today. The
+  uniform `[1, 1, 1] / 3` kernel (rather than the `[1, 2, 1] / 4`
+  variant that would converge to a Gaussian) keeps `\be` distinct from
+  `\blur` per the spec's "iterative vs more advanced algorithm"
+  distinction — the two filters stay on independent `RenderState`
+  channels (`be_strength` + `blur_sigma`) and compose multiplicatively
+  in the renderer (Gaussian first, then iterative box, in a fixed
+  order the spec does not pin but reads naturally as "primary edge
+  softener, then mild touch-up"). The integer kernel uses a
+  `(a + b + c + 1) / 3` rounded mean so constant patches are exact
+  fixed points (no slow erosion of a uniform fill over repeated
+  passes). New integration tests in `tests/render.rs`: `\be0` matches
+  the no-override baseline ink bbox within ±2 px on each side; `\be4`
+  widens the alpha bbox (softer edges leak into previously-empty
+  pixels); `\blur3\be3` produces a bbox area no smaller than `\blur3`
+  alone (pins the "both post-steps actually run" contract against a
+  future regression where one overwrites the other's working buffer).
+  New unit tests in `render.rs` pin the zero-strength no-op, the
+  zero-canvas guard, the short-buffer defensive guard, the
+  constant-patch fixed-point property, the single-iteration alpha
+  spread across a hard edge, and the monotonic-spread property
+  (`\be2` reaches further than `\be1`).
+
 - `AnimatedRenderedDecoder` now bakes the typed `\blur<strength>`
   Gaussian edge-blur into the rasterised RGBA buffer as a post-step
   via `oxideav-image-filter`'s separable `Blur` filter. Per the
