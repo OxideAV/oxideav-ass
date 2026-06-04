@@ -975,3 +975,147 @@ fn clip_wins_over_iclip_when_both_set() {
         "expected \\clip to win when both set: clip={mass_clip} both={mass_both}"
     );
 }
+
+// `\fsp<spacing>` — letter-spacing in script-resolution pixels. Per the
+// Aegisub override-tag reference, the value is an extra gap inserted
+// between each pair of adjacent letters; it may be negative and may
+// be a decimal. The renderer's typed extractor surfaces the value on
+// `RenderState::letter_spacing` and the rasteriser now bakes it into
+// the per-glyph X translation. The line-width measurement that drives
+// alignment + greedy wrap also picks up the same `(n_glyphs - 1) * fsp`
+// widening so a positive `\fsp` cannot fit more glyphs per visual line
+// than the no-override baseline.
+
+#[test]
+fn fsp_zero_matches_baseline_bbox() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\fsp0` is an explicit no-op — the rendered ink bbox should
+    // match the baseline (no `\fsp`) within tight tolerance.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,FSPTEXT\n");
+    let zero =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\fsp0}}FSPTEXT\n");
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_zero = render_first_frame(&zero, 320, 120).expect("fsp0");
+    let bbox_base = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let bbox_zero = alpha_bbox(&f_zero, 320).expect("fsp0 ink");
+
+    let w_base = (bbox_base.2 - bbox_base.0) as i32;
+    let w_zero = (bbox_zero.2 - bbox_zero.0) as i32;
+    assert!(
+        (w_base - w_zero).abs() <= 2,
+        "\\fsp0 should match baseline width: base={w_base} fsp0={w_zero}"
+    );
+}
+
+#[test]
+fn fsp_positive_widens_ink_bbox() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\fsp6` on a 7-letter run should insert `(n_glyphs - 1) * 6 =
+    // 36` script-pixels of extra width between the rendered glyphs,
+    // so the ink bbox X-extent strictly widens vs. the no-override
+    // baseline. The exact widening is bounded above by `36 + AA
+    // slack` — well over the `(n_glyphs - 1)` lower bound that proves
+    // a per-pair gap is being inserted at all.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,FSPTEXT\n");
+    let widened =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\fsp6}}FSPTEXT\n");
+
+    let f_base = render_first_frame(&baseline, 480, 120).expect("baseline");
+    let f_wide = render_first_frame(&widened, 480, 120).expect("fsp+");
+    let bbox_base = alpha_bbox(&f_base, 480).expect("baseline ink");
+    let bbox_wide = alpha_bbox(&f_wide, 480).expect("fsp+ ink");
+
+    let w_base = (bbox_base.2 - bbox_base.0) as i32;
+    let w_wide = (bbox_wide.2 - bbox_wide.0) as i32;
+    // FSPTEXT has 7 rendered glyphs → 6 gaps → ~36 px of widening.
+    // A reasonable lower bound: at least one full gap (`fsp - AA`)
+    // wider than the baseline.
+    assert!(
+        w_wide >= w_base + 5,
+        "\\fsp6 did not widen ink bbox: base={w_base} fsp+={w_wide}"
+    );
+
+    // Vertical extent must be unaffected by letter-spacing (it's a
+    // pure X-axis effect). Allow a couple of pixels of AA slack.
+    let h_base = (bbox_base.3 - bbox_base.1) as i32;
+    let h_wide = (bbox_wide.3 - bbox_wide.1) as i32;
+    assert!(
+        (h_base - h_wide).abs() <= 3,
+        "\\fsp should not change y-extent: h_base={h_base} h_fsp={h_wide}"
+    );
+}
+
+#[test]
+fn fsp_negative_narrows_ink_bbox() {
+    if load_face().is_none() {
+        return;
+    }
+    // A negative `\fsp` reads as the spec's "spread the text more out
+    // visually" tag used in reverse — the renderer subtracts the gap
+    // between each pair of rendered glyphs. The line width and the
+    // resulting ink bbox X-extent must both narrow vs. the baseline.
+    // We keep the magnitude small (`-1.5`) so glyphs only get nudged
+    // closer rather than fully overlapping (overlap edge cases sit
+    // outside the spec's headline "spread out" description).
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,FSPTEXT\n");
+    let narrowed =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\fsp-1.5}}FSPTEXT\n");
+
+    let f_base = render_first_frame(&baseline, 480, 120).expect("baseline");
+    let f_narrow = render_first_frame(&narrowed, 480, 120).expect("fsp-");
+    let bbox_base = alpha_bbox(&f_base, 480).expect("baseline ink");
+    let bbox_narrow = alpha_bbox(&f_narrow, 480).expect("fsp- ink");
+
+    let w_base = (bbox_base.2 - bbox_base.0) as i32;
+    let w_narrow = (bbox_narrow.2 - bbox_narrow.0) as i32;
+    assert!(
+        w_narrow < w_base,
+        "\\fsp-1.5 did not narrow ink bbox: base={w_base} fsp-={w_narrow}"
+    );
+}
+
+#[test]
+fn fsp_animates_via_t_block() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\fsp` is animatable inside `\t(...)` per the Aegisub spec. A
+    // ramp from 0 to a large positive value over the cue's lifetime
+    // should produce a frame at `t = 0` whose ink bbox matches the
+    // baseline width, and a frame at `t = end` whose ink bbox is
+    // strictly wider than that baseline.
+    let ass = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\fsp0\\t(\\fsp10)}}FSPTEXT\n"
+    );
+    let face_a = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let face_b = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let inner_a = build_decoder(&ass);
+    let mut dec_a = AnimatedRenderedDecoder::new(inner_a, 480, 120, face_a);
+    dec_a.set_offset_ms(0);
+    let f_start = dec_a.receive_frame().expect("start");
+    let bbox_start = alpha_bbox(&f_start, 480).expect("ink start");
+
+    let inner_b = build_decoder(&ass);
+    let mut dec_b = AnimatedRenderedDecoder::new(inner_b, 480, 120, face_b);
+    dec_b.set_offset_ms(1000);
+    let f_end = dec_b.receive_frame().expect("end");
+    let bbox_end = alpha_bbox(&f_end, 480).expect("ink end");
+
+    let w_start = (bbox_start.2 - bbox_start.0) as i32;
+    let w_end = (bbox_end.2 - bbox_end.0) as i32;
+    assert!(
+        w_end > w_start,
+        "\\t(\\fsp10) ramp did not widen ink from t=0 to t=end: start_w={w_start} end_w={w_end}"
+    );
+}

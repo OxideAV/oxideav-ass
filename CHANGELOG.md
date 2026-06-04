@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AnimatedRenderedDecoder` now bakes the typed `\fsp<spacing>`
+  letter-spacing override into the rasterised output. Per the Aegisub
+  override-tag reference, `\fsp` inserts an extra gap of `spacing`
+  script-resolution pixels between each pair of adjacent letters
+  (negative + decimal values allowed). The renderer reads
+  `RenderState::letter_spacing` at sample time, adds `index * fsp`
+  to each rendered glyph's X translation on top of the shaper's
+  cumulative pen position, and folds the same `(n_glyphs - 1) * fsp`
+  widening into the line-width measurement that drives alignment +
+  greedy word-wrap — so a positive `\fsp` cannot fit more glyphs per
+  visual line than the no-override baseline. The typed extractor
+  already animated `\fsp` inside `\t(...)`, so a `\t(\fsp10)` ramp
+  surfaces here without any further wiring. New integration tests in
+  `tests/render.rs`: `\fsp0` matches the baseline ink bbox within ±2
+  px; `\fsp6` on a 7-glyph run strictly widens the X-extent by at
+  least `fsp - AA` while leaving the Y-extent unchanged within ±3
+  px; `\fsp-1.5` strictly narrows the X-extent (the spec's "spread
+  the text more out visually" tag used in reverse); and a
+  `\t(\fsp10)` ramp produces a wider ink bbox at `t = cue_end` than
+  at `t = 0`. Spaces (non-rendering glyphs from the shaper's
+  perspective) don't get an explicit `fsp` gap added on either side,
+  because `Shaper::shape_to_paths` filters non-rendering glyphs out
+  of its output; the rendered-glyph-only iteration produces one
+  `fsp` gap between every pair of adjacent rendered glyphs, which
+  matches the pure-letter case exactly and behaves reasonably for
+  spaced runs (each cluster of contiguous rendered glyphs gets the
+  full per-pair widening). Files: `src/render.rs` (renderer pipeline
+  comment, `render_cue_animated` glyph placement loop, `measure_with_fsp`
+  helper, `wrap_line` `fsp` arg).
+
 - `AnimatedRenderedDecoder` now bakes the typed `\iclip(rect)` and
   `\iclip(drawing)` inverse-clip overrides into the rasterised
   output. The renderer constructs a compound clip path with an

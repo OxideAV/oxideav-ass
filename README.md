@@ -222,7 +222,18 @@ What the parser understands and preserves on round-trip:
   "regular effect, repeated `strength` times" definition. The two
   filters stay on independent `RenderState` channels (`blur_sigma`
   + `be_strength`) per the spec's "more advanced algorithm vs
-  iterative" distinction. The `\iclip(rect)` and `\iclip(drawing)`
+  iterative" distinction. The `\fsp<spacing>` letter-spacing
+  override is baked into the per-glyph X translation: each rendered
+  glyph picks up an extra `index * fsp` shift on top of the shaper's
+  cumulative pen position, so the gap between every pair of adjacent
+  rendered glyphs grows by `fsp` script-resolution pixels (the spec
+  describes the value as "the spacing between the individual
+  letters", negative + decimal allowed). The widened line width is
+  also folded into the alignment + greedy word-wrap step so a
+  positive `\fsp` cannot fit more glyphs per visual line than the
+  no-override baseline; `\fsp` ramps inside `\t(...)` per the spec
+  also surface here, since the typed extractor already populates
+  `RenderState::letter_spacing` at the sample time. The `\iclip(rect)` and `\iclip(drawing)`
   inverse-clip overrides are also baked in: the renderer constructs
   a compound clip path with an outer ring well past the canvas
   followed by the inverse subpath in reverse traversal direction so

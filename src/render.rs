@@ -19,7 +19,12 @@
 //!    into the cue's `[start, end]` lifetime.
 //! 4. Build a [`oxideav_core::VectorFrame`] containing the cue's
 //!    shaped glyph nodes (via the supplied [`oxideav_scribe::FaceChain`])
-//!    placed line-by-line, then wrap them in a `Group` whose:
+//!    placed line-by-line — with `RenderState::letter_spacing`
+//!    (`\fsp<spacing>`) injected as an extra `fsp` script-pixel gap
+//!    between each pair of adjacent rendered glyphs and folded into
+//!    each line's measured width so the word-wrap step picks the same
+//!    breakpoints the placement loop will produce — then wrap them in
+//!    a `Group` whose:
 //!    - `transform` composes the animation's `move` ∘ pivoted
 //!      `\frx`/`\fry`/`\frz` ∘ `\fscx`/`\fscy` matrix (3D rotations
 //!      reduced to a 2D affine via a small-angle approximation around
@@ -215,9 +220,25 @@ impl AnimatedRenderedDecoder {
         } else {
             self.font_size_px
         };
+        // Letter-spacing override (`\fsp<spacing>`). Per the Aegisub
+        // override-tag reference, the value is an additional gap in
+        // script-resolution pixels inserted between each pair of
+        // adjacent glyphs (the spec text reads "the spacing between
+        // the individual letters"). The value may be negative and may
+        // be a decimal. `None` here means "fall back to the style's
+        // `Spacing` field" — we don't have that field plumbed through
+        // to the renderer yet, so a `None` falls all the way to zero
+        // and leaves the shaper's natural advances untouched.
+        //
+        // We pass the value down to `wrap_line` / `measure` so the
+        // greedy word-wrap uses the same widened width that the per-
+        // glyph placement loop will produce — otherwise a positive
+        // `\fsp` could fit fewer glyphs per visual line than the
+        // wrapper thought.
+        let fsp = state.letter_spacing.unwrap_or(0.0);
         let mut visual_lines: Vec<String> = Vec::new();
         for line in &logical_lines {
-            for v in wrap_line(line, face, size_px, max_text_w as f32) {
+            for v in wrap_line(line, face, size_px, max_text_w as f32, fsp) {
                 visual_lines.push(v);
             }
         }
@@ -311,7 +332,27 @@ impl AnimatedRenderedDecoder {
             [r, g, b, a]
         };
         for (i, line) in visual_lines.iter().enumerate() {
-            let line_w_px = measure(face, line, size_px);
+            let glyphs = Shaper::shape_to_paths(face, line, size_px);
+            // Per the Aegisub override-tag reference, `\fsp` inserts an
+            // extra gap of `fsp` script-resolution pixels between each
+            // adjacent pair of glyphs. `shape_to_paths` filters out
+            // non-rendering glyphs (SPACE, etc.) but accumulates their
+            // advances into the rendering glyphs that follow — so
+            // adding `fsp_index * fsp` to each *rendered* glyph's X
+            // gives one extra `fsp` gap between every pair of rendered
+            // glyphs in the line. The line's overall width then grows
+            // by `(n_glyphs - 1) * fsp` where `n_glyphs` is the count
+            // of rendered glyphs returned by `shape_to_paths`. The
+            // value can be negative; a sufficiently negative `fsp`
+            // can overlap glyphs, which is the spec-described "spread
+            // the text more out visually" tag used in reverse.
+            let n_glyphs = glyphs.len();
+            let extra_w = if n_glyphs > 1 {
+                (n_glyphs as f32 - 1.0) * fsp
+            } else {
+                0.0
+            };
+            let line_w_px = measure(face, line, size_px) + extra_w;
             let line_x = match align {
                 TextAlign::Left | TextAlign::Start => self.side_margin_px as f32,
                 TextAlign::Right | TextAlign::End => {
@@ -328,10 +369,11 @@ impl AnimatedRenderedDecoder {
             let _ = anchor_y;
 
             let mut pen_x = line_x;
-            let glyphs = Shaper::shape_to_paths(face, line, size_px);
             let fill = Paint::Solid(rgba_to_core(primary_color));
-            for (_face_idx, node, glyph_xform) in glyphs {
-                let absolute = Transform2D::translate(pen_x, baseline_y).compose(&glyph_xform);
+            for (gi, (_face_idx, node, glyph_xform)) in glyphs.into_iter().enumerate() {
+                let fsp_shift = (gi as f32) * fsp;
+                let absolute =
+                    Transform2D::translate(pen_x + fsp_shift, baseline_y).compose(&glyph_xform);
                 let painted = repaint_node(node, &fill);
                 inner.children.push(Node::Group(Group {
                     transform: absolute,
@@ -837,12 +879,37 @@ fn measure(face: &FaceChain, text: &str, size_px: f32) -> f32 {
     }
 }
 
-/// Greedy word-wrap by shaped width. Returns visual lines.
-fn wrap_line(line: &str, face: &FaceChain, size_px: f32, max_w: f32) -> Vec<String> {
+/// Measure `text` for layout, including an extra `fsp` script-pixel
+/// gap between each pair of adjacent rendered glyphs (the renderer's
+/// `\fsp<spacing>` letter-spacing surface). The rendered-glyph count
+/// is the [`Shaper::shape_to_paths`] output length — non-rendering
+/// glyphs (SPACE, etc.) don't get an extra gap added because the
+/// placement loop in `render_cue_animated` iterates the rendered
+/// nodes only. Returns the same value as [`measure`] when `fsp == 0`.
+fn measure_with_fsp(face: &FaceChain, text: &str, size_px: f32, fsp: f32) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    let base = measure(face, text, size_px);
+    if fsp == 0.0 {
+        return base;
+    }
+    let n = Shaper::shape_to_paths(face, text, size_px).len();
+    if n <= 1 {
+        return base;
+    }
+    base + (n as f32 - 1.0) * fsp
+}
+
+/// Greedy word-wrap by shaped width. Returns visual lines. `fsp` is
+/// the `\fsp<spacing>` letter-spacing in script-resolution pixels and
+/// is added to the measured line width so the wrapper picks the same
+/// breakpoints the per-glyph placement loop will hit.
+fn wrap_line(line: &str, face: &FaceChain, size_px: f32, max_w: f32, fsp: f32) -> Vec<String> {
     if line.is_empty() {
         return vec![String::new()];
     }
-    if measure(face, line, size_px) <= max_w {
+    if measure_with_fsp(face, line, size_px, fsp) <= max_w {
         return vec![line.to_string()];
     }
     // Tokenise into space-separated words; greedy fill.
@@ -855,7 +922,7 @@ fn wrap_line(line: &str, face: &FaceChain, size_px: f32, max_w: f32) -> Vec<Stri
         } else {
             format!("{} {}", cur, w)
         };
-        if measure(face, &candidate, size_px) <= max_w {
+        if measure_with_fsp(face, &candidate, size_px, fsp) <= max_w {
             cur = candidate;
         } else {
             if !cur.is_empty() {
