@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed `[Fonts]` / `[Graphics]` attachment accessor
+  (`oxideav_ass::parse_attachments` → `Vec<Attachment>`). The base
+  `parse` entry point still round-trips the section bodies verbatim
+  through `extradata` so a write loop keeps the printable lines
+  unchanged; the new side-channel reader walks the same header,
+  groups consecutive body lines under each `fontname:` (font) or
+  `filename:` (graphics) marker, and reverses the SSA Appendix-B
+  character encoding into the original binary payload. The decoder
+  handles all three input-length residues described in the spec:
+  multiples of three pack four printable characters into three
+  output bytes per quartet, a one-byte tail decodes from two
+  characters (12-bit packed payload), and a two-byte tail decodes
+  from three characters (18-bit packed payload). Lines whose
+  contents fall outside the SSA printable alphabet (`33..=126`) are
+  skipped per the spec's offset-of-33 rule. Three unit tests cover
+  the three-byte-aligned font path, the one-byte-tail graphics
+  path, and a multi-attachment Fonts section that splits on a
+  repeated `fontname:` marker and joins a multi-line body; two more
+  cover the no-attachments and empty-body edge cases. The `Attachment`
+  struct exposes `kind: AttachmentKind` (`Font` / `Graphics`), `name`,
+  and decoded `data: Vec<u8>` — downstream consumers can now feed the
+  bytes straight into `oxideav-ttf` / `oxideav-otf` / `oxideav-png` /
+  etc. without re-implementing the SSA-printable transform.
 - `AnimatedRenderedDecoder` now bakes the typed `\fsp<spacing>`
   letter-spacing override into the rasterised output. Per the Aegisub
   override-tag reference, `\fsp` inserts an extra gap of `spacing`

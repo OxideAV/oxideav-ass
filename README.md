@@ -251,11 +251,31 @@ What the parser understands and preserves on round-trip:
 - Commas inside the `Text` field are preserved (the CSV splitter stops
   at the per-format column count).
 
+- **Typed `[Fonts]` / `[Graphics]` attachment accessor** — the SSA v4
+  spec packs embedded font / picture files into the script via a
+  printable-character encoding (Appendix B): three bytes are packed
+  into a 24-bit value, split into four 6-bit fields, and each field
+  is offset by 33 to produce an ASCII character. The base `parse`
+  entry point still keeps each section body verbatim in `extradata`
+  so a write loop emits the original printable lines unchanged, but
+  `oxideav_ass::parse_attachments(&bytes)` now exposes the decoded
+  binary form on top: it groups consecutive body lines under each
+  `fontname: <name>` (Fonts) / `filename: <name>` (Graphics) marker
+  and reverses the encoding back into `Vec<u8>`. The decoder handles
+  all three input-length residues — multiples of three pack four
+  characters into three bytes per quartet, a one-byte tail decodes
+  from two characters (12-bit packed payload), and a two-byte tail
+  decodes from three characters (18-bit packed payload). Body lines
+  containing characters outside the SSA printable alphabet
+  (`33..=126`, the spec's offset-of-33 rule) are skipped without
+  killing the surrounding attachment. The returned `Attachment` carries
+  `kind: AttachmentKind` (`Font` / `Graphics`), `name`, and the decoded
+  `data: Vec<u8>` — consumers can feed font bytes straight into
+  `oxideav-ttf` / `oxideav-otf` and picture bytes into the matching
+  image decoder without re-implementing the SSA printable transform.
+
 Out of scope for this crate:
 
-- `[Fonts]` / `[Graphics]` UU-encoded attachment payloads are kept as
-  opaque bytes (round-tripped verbatim via extradata) — the parser
-  does not decode the embedded font / image data into typed objects.
 - (None on the blur axis — both `\blur<strength>` and `\be<strength>`
   are baked into the `AnimatedRenderedDecoder`; the two filters stay
   on separate channels per the Aegisub spec rather than being merged

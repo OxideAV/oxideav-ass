@@ -20,6 +20,7 @@
 //! from `oxideav-subtitle` live in [`transform`].
 
 pub mod animate;
+pub mod attachment;
 pub mod codec;
 pub mod container;
 pub mod drawing;
@@ -31,6 +32,7 @@ pub use animate::{
     extract_cue_animation, parse_overrides, AnimatedTag, ClipRect, CueAnimation, KaraokeKind,
     KaraokeSpan, RenderState,
 };
+pub use attachment::{parse_attachments, Attachment, AttachmentKind};
 pub use drawing::parse_drawing;
 #[cfg(feature = "render")]
 pub use render::{make_animated_decoder, AnimatedRenderedDecoder};
