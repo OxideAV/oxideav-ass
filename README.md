@@ -244,8 +244,22 @@ What the parser understands and preserves on round-trip:
   `\iclip` appear on the same segment the positive form wins,
   matching the existing "last-set-wins" override model (the Aegisub
   override-tag reference describes each form independently and does
-  not pin a co-occurrence rule). Opt out via
-  `default-features = false`.
+  not pin a co-occurrence rule). The `\shad<depth>` /
+  `\xshad<depth>` / `\yshad<depth>` drop-shadow distance is baked
+  in by pushing an extra translated-and-repainted shadow node
+  *before* the primary fill node for each glyph on the line: the
+  shadow colour comes from `\4c`
+  (`RenderState::shadow_color`, defaulting to opaque black when the
+  tag is absent), the shadow alpha follows the `\Xa` convention
+  (wire `0` = opaque, `255` = transparent, mapped via
+  `255 - ass_a`), and the per-axis offset is read straight off
+  `RenderState::shadow`. Negative `\xshad` / `\yshad` values place
+  the shadow above-left per the spec note that the per-axis forms
+  accept negative depths; the shadow is disabled only when both X
+  and Y distances are zero. The cue-level `\fad` / `\fade`
+  envelope stays on the outer `Group::opacity` and composes
+  multiplicatively over both the shadow and primary passes. Opt
+  out via `default-features = false`.
 - `\N` hard line break, `\h` hard space, `\n` soft break.
 - ASS timestamp format `H:MM:SS.cc` (centiseconds).
 - Commas inside the `Text` field are preserved (the CSV splitter stops

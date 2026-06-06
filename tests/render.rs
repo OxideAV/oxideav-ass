@@ -1119,3 +1119,164 @@ fn fsp_animates_via_t_block() {
         "\\t(\\fsp10) ramp did not widen ink from t=0 to t=end: start_w={w_start} end_w={w_end}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `\shad` / `\xshad` / `\yshad` drop-shadow bake tests.
+//
+// Per the Aegisub override-tag reference:
+//
+// * `\shad<depth>` places a shadow at `(depth, depth)` bottom-right of
+//   the glyph; `depth = 0` disables the shadow entirely.
+// * `\xshad<depth>` and `\yshad<depth>` set the per-axis distance
+//   independently and accept *negative* values, positioning the
+//   shadow above-left of the glyph. The shadow is only disabled when
+//   *both* X and Y distance are zero.
+//
+// The bake widens the ink bbox by the shadow offset (always toward
+// the offset direction) without moving the primary glyph's own
+// extent. The `\4a` shadow-alpha tag turns the shadow off when set
+// to `&HFF&` (fully transparent) — the primary fill stays opaque.
+
+#[test]
+fn shad_zero_matches_baseline_bbox() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\shad0` disables the shadow per spec ("Set the depth to 0
+    // (zero) to disable shadow entirely"). The renderer should
+    // behave like the baseline cue.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,SHAD\n");
+    let zero =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\shad0}}SHAD\n");
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_zero = render_first_frame(&zero, 320, 120).expect("zero");
+    let bbox_base = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let bbox_zero = alpha_bbox(&f_zero, 320).expect("zero ink");
+
+    assert_eq!(
+        bbox_base, bbox_zero,
+        "\\shad0 changed the ink bbox: base={bbox_base:?} zero={bbox_zero:?}"
+    );
+}
+
+#[test]
+fn shad_extends_ink_bbox_bottom_right() {
+    if load_face().is_none() {
+        return;
+    }
+    // A positive `\shad<depth>` places the shadow at `(depth, depth)`
+    // bottom-right of every glyph, so the rasterised ink bbox grows
+    // by approximately `depth` pixels at the max_x / max_y edges
+    // while the min_x / min_y edges stay aligned with the baseline
+    // (the primary fill still occupies the original positions).
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,SHAD\n");
+    let shadowed =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\shad5}}SHAD\n");
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_shad = render_first_frame(&shadowed, 320, 120).expect("shadowed");
+    let (bx0, by0, bx1, by1) = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let (sx0, sy0, sx1, sy1) = alpha_bbox(&f_shad, 320).expect("shadowed ink");
+
+    // min_x / min_y are still pinned by the primary fill — at most a
+    // 1-pixel rasteriser rounding shift in either direction.
+    assert!(
+        (sx0 as i32 - bx0 as i32).abs() <= 1,
+        "\\shad5 shifted left ink edge: base={bx0} shad={sx0}"
+    );
+    assert!(
+        (sy0 as i32 - by0 as i32).abs() <= 1,
+        "\\shad5 shifted top ink edge: base={by0} shad={sy0}"
+    );
+
+    // max_x / max_y should grow by approximately the shadow depth.
+    // Allow a 1-pixel rasteriser-rounding tolerance on each side of
+    // the nominal 5-px shift; the shadow must produce at least 3
+    // extra pixels on each axis to count as a real bake (vs. a
+    // glyph-AA-only width change).
+    let dx = sx1 as i32 - bx1 as i32;
+    let dy = sy1 as i32 - by1 as i32;
+    assert!(
+        (3..=7).contains(&dx),
+        "\\shad5 max_x delta out of [3, 7]: base_x1={bx1} shad_x1={sx1} dx={dx}"
+    );
+    assert!(
+        (3..=7).contains(&dy),
+        "\\shad5 max_y delta out of [3, 7]: base_y1={by1} shad_y1={sy1} dy={dy}"
+    );
+}
+
+#[test]
+fn xshad_yshad_extend_independently_and_signed() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\xshad-8\yshad-4` — per the Aegisub spec note the per-axis
+    // variants accept negative depths, placing the shadow above-left
+    // of the text. The bake should grow min_x by ~8 px (shadow
+    // extends left) and min_y by ~4 px (shadow extends up); max_x /
+    // max_y stay pinned by the primary fill (within rasteriser
+    // rounding).
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,SHAD\n");
+    let shadowed = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\xshad-8\\yshad-4}}SHAD\n"
+    );
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_shad = render_first_frame(&shadowed, 320, 120).expect("shadowed");
+    let (bx0, by0, bx1, by1) = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let (sx0, sy0, sx1, sy1) = alpha_bbox(&f_shad, 320).expect("shadowed ink");
+
+    // min_x shrinks by ~8 (shadow extends left).
+    let dx_min = bx0 as i32 - sx0 as i32;
+    assert!(
+        (6..=10).contains(&dx_min),
+        "negative \\xshad min_x delta out of [6, 10]: base_x0={bx0} shad_x0={sx0} dx={dx_min}"
+    );
+    // min_y shrinks by ~4 (shadow extends up).
+    let dy_min = by0 as i32 - sy0 as i32;
+    assert!(
+        (2..=6).contains(&dy_min),
+        "negative \\yshad min_y delta out of [2, 6]: base_y0={by0} shad_y0={sy0} dy={dy_min}"
+    );
+    // max_x / max_y still pinned by primary fill — within 1 px.
+    assert!(
+        (sx1 as i32 - bx1 as i32).abs() <= 1,
+        "negative shadow shifted right ink edge: base={bx1} shad={sx1}"
+    );
+    assert!(
+        (sy1 as i32 - by1 as i32).abs() <= 1,
+        "negative shadow shifted bottom ink edge: base={by1} shad={sy1}"
+    );
+}
+
+#[test]
+fn shadow_alpha_fully_transparent_skips_shadow_pass() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\4a&HFF&` — shadow-alpha fully transparent. Even with a
+    // nonzero `\shad` distance the shadow contribution to the ink
+    // bbox must vanish: max_x / max_y align with the baseline
+    // (within rasteriser rounding) because the shadow node renders
+    // at alpha 0.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,SHAD\n");
+    let muted = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\shad5\\4a&HFF&}}SHAD\n"
+    );
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_muted = render_first_frame(&muted, 320, 120).expect("muted");
+    let (_, _, bx1, by1) = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let (_, _, mx1, my1) = alpha_bbox(&f_muted, 320).expect("muted ink");
+
+    assert!(
+        (mx1 as i32 - bx1 as i32).abs() <= 1,
+        "\\4a&HFF& failed to mute shadow on max_x: base={bx1} muted={mx1}"
+    );
+    assert!(
+        (my1 as i32 - by1 as i32).abs() <= 1,
+        "\\4a&HFF& failed to mute shadow on max_y: base={by1} muted={my1}"
+    );
+}

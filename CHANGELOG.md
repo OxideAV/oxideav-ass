@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AnimatedRenderedDecoder` bakes `\shad<depth>` /
+  `\xshad<depth>` / `\yshad<depth>` drop-shadow distance into the
+  rasterised RGBA output. For every glyph on the line the renderer
+  pushes an extra translated-and-repainted node into the inner
+  `Group` *before* the primary fill node, shifted by the typed
+  `RenderState::shadow` offset on each axis. The shadow colour
+  comes from `\4c` (`state.shadow_color`) and falls back to opaque
+  black when the override is absent; the shadow alpha follows the
+  `\Xa` convention — wire `0` is opaque, `255` is transparent,
+  mapped via `255 - ass_a`. Negative `\xshad` / `\yshad` values
+  position the shadow above-left per the spec note; the shadow is
+  disabled only when both X and Y distances are zero. The
+  cue-level `\fad` / `\fade` envelope stays on the outer
+  `Group::opacity` so it composes multiplicatively over both the
+  shadow and primary passes (consistent with the existing primary
+  fill rule). Four integration tests cover the bake: `\shad0`
+  leaves the baseline bbox unchanged, `\shad5` extends max_x /
+  max_y by ~5 px on each axis, `\xshad-8\yshad-4` extends min_x
+  by ~8 px and min_y by ~4 px while leaving the bottom-right edge
+  pinned by the primary fill, and `\4a&HFF&` mutes the shadow
+  contribution so the bbox snaps back to baseline.
 - Typed `[Fonts]` / `[Graphics]` attachment accessor
   (`oxideav_ass::parse_attachments` → `Vec<Attachment>`). The base
   `parse` entry point still round-trips the section bodies verbatim

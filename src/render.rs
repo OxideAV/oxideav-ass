@@ -370,10 +370,63 @@ impl AnimatedRenderedDecoder {
 
             let mut pen_x = line_x;
             let fill = Paint::Solid(rgba_to_core(primary_color));
+            // Per the Aegisub override-tag reference, `\shad<depth>`
+            // places a drop-shadow of the text at `(depth, depth)`
+            // bottom-right of the glyph; `\xshad<depth>` /
+            // `\yshad<depth>` set the per-axis distance independently
+            // and accept negative values (placing the shadow above /
+            // to the left). The typed extractor resolves all three
+            // tags into `RenderState::shadow = Some((xshad, yshad))`.
+            //
+            // When the shadow is active we splice one extra
+            // translated-and-repainted glyph node into the inner
+            // `Group` *before* the primary fill node for every glyph
+            // on the line, so the rasteriser draws the shadow first
+            // and the fill lands on top. The shadow colour comes from
+            // `\4c` (`state.shadow_color`); the shadow alpha follows
+            // the same `\Xa` convention as the other channels — wire
+            // `0` is opaque, `255` is transparent, mapped to RGBA via
+            // `255 - ass_a`. When `\4a` is absent we leave the shadow
+            // fully opaque so the spec's "shadow is only disabled if
+            // both X and Y distance is 0" rule lines up with the
+            // visible-vs-invisible state. The cue-level `\fad` /
+            // `\fade` envelope stays on the outer `Group::opacity`
+            // so it composes multiplicatively over both the shadow
+            // and primary passes (consistent with the same rule
+            // already documented on the primary fill).
+            //
+            // The "draw shadow first" ordering matches the spec's
+            // semantics — `\shad` is described as placing the shadow
+            // *behind* the text, and the Aegisub reference's
+            // category table lists `\shad` alongside `\bord` under
+            // "其他效果 / Other effects" without pinning a stacking
+            // rule beyond "behind the glyph fill".
+            let shadow_paint = match state.shadow {
+                Some((xshad, yshad)) if xshad != 0.0 || yshad != 0.0 => {
+                    let (sr, sg, sb) = state.shadow_color.unwrap_or((0, 0, 0));
+                    let sa = match state.shadow_alpha {
+                        Some(ass_a) => 255u8.saturating_sub(ass_a),
+                        None => 255,
+                    };
+                    Some((xshad, yshad, Paint::Solid(rgba_to_core([sr, sg, sb, sa]))))
+                }
+                _ => None,
+            };
             for (gi, (_face_idx, node, glyph_xform)) in glyphs.into_iter().enumerate() {
                 let fsp_shift = (gi as f32) * fsp;
                 let absolute =
                     Transform2D::translate(pen_x + fsp_shift, baseline_y).compose(&glyph_xform);
+                if let Some((xshad, yshad, ref shad_paint)) = shadow_paint {
+                    let shadow_absolute =
+                        Transform2D::translate(pen_x + fsp_shift + xshad, baseline_y + yshad)
+                            .compose(&glyph_xform);
+                    let shadow_painted = repaint_node(node.clone(), shad_paint);
+                    inner.children.push(Node::Group(Group {
+                        transform: shadow_absolute,
+                        children: vec![shadow_painted],
+                        ..Group::default()
+                    }));
+                }
                 let painted = repaint_node(node, &fill);
                 inner.children.push(Node::Group(Group {
                     transform: absolute,
