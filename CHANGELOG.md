@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed accessor for the per-event `Layer` column on `Dialogue:` event
+  lines (`oxideav_ass::parse_layer_field(&str) -> LayerOverride`). The
+  base `parse` entry point reads the dialogue `Format:` row, splits
+  each event line on commas, and drops the `Layer` column on the floor
+  because the shared `SubtitleCue` IR has no slot for the per-event
+  render-order integer. The round-trip writer fills the column with a
+  literal `0`, which is fine for the dominant case but loses any
+  per-line render-order the original script requested. The SSA v4.x
+  specification documents the column as *"Layer (any integer).
+  Subtitles having different layer numbers will be ignored during the
+  collision detection. Higher numbered layers will be drawn over the
+  lower numbered."* — two distinct renderer behaviours hang off the
+  single integer: collision-detection grouping (lines that share a
+  `Layer` collide; lines with different `Layer`s do not) and paint
+  order (higher `Layer`s paint on top of lower `Layer`s). The new
+  `dialogue_layer` module captures the column as a `LayerOverride`
+  enum: `Default` (empty column / whitespace / the literal `0` in any
+  sign form `0` / `+0` / `-0` — equivalent to "no per-event override;
+  the base layer is `0`") versus `Layer(i32)` (an explicit non-zero
+  signed integer). The signed `i32` carrier preserves the spec's "any
+  integer" wording so negative layers (legal and appearing in
+  hand-authored scripts as a deliberate "draw behind everything else"
+  choice) round-trip exactly. The variant is `Copy + Eq` so it flows
+  freely through structs and matches. Helper accessors round out the
+  surface: `as_layer(self) -> Option<i32>` for the
+  `event.layer.or(override.as_layer())` chain, and `resolve(self) ->
+  i32` (Default → 0, Layer(n) → n) for the dominant render-loop path
+  where a comparison against other cues' resolved layers drives both
+  collision grouping (`==`) and paint order (ascending `Ord`).
+  Malformed columns (non-numeric content, bare `+` / `-`, `i32`
+  overflow) collapse to `Default` so the parser stays total — the
+  renderer transparently uses the base layer `0`, mirroring how the
+  SSA reference treats an unset event-layer column. 20 unit tests
+  cover empty, whitespace-only, the literal `0` in every sign form,
+  explicit positive / negative / leading-`+` values, leading-zero
+  magnitude padding (parsed as decimal, not octal), surrounding
+  whitespace tolerance, non-numeric rejection (`abc`, `1.5`, `0xFF`,
+  `1e3`, `5px`), `i32::MIN` and `i32::MAX` boundary round-trip,
+  overflow rejection on both signs, bare-sign rejection, the
+  `as_layer` accessor on both variants, the `resolve` accessor on
+  both variants, the `Default` trait impl, `Copy + Eq` ergonomics, and
+  the spec's two rendering ergonomics (`==` collision grouping +
+  ascending `Ord` paint order through a four-element `sort` sample).
+
 - Typed accessor for the per-event `MarginL` / `MarginR` / `MarginV`
   columns on `Dialogue:` event lines
   (`oxideav_ass::parse_margin_field(&str) -> MarginOverride`). The

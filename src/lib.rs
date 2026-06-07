@@ -23,6 +23,7 @@ pub mod animate;
 pub mod attachment;
 pub mod codec;
 pub mod container;
+pub mod dialogue_layer;
 pub mod dialogue_margin;
 pub mod drawing;
 pub mod event_effect;
@@ -35,6 +36,7 @@ pub use animate::{
     KaraokeSpan, RenderState,
 };
 pub use attachment::{parse_attachments, Attachment, AttachmentKind};
+pub use dialogue_layer::{parse_layer_field, LayerOverride};
 pub use dialogue_margin::{parse_margin_field, MarginOverride};
 pub use drawing::parse_drawing;
 pub use event_effect::{parse_effect_field, BannerDirection, EventEffect};

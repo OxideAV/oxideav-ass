@@ -313,6 +313,41 @@ What the parser understands and preserves on round-trip:
   variants since the spec lets the script pass top / bottom in
   either order, and a `scrolls_full_height()` helper recognises the
   `y1 == y2 == 0` shorthand.
+- **Typed per-event `Layer` accessor** — the dialogue `Format:` row
+  reserves a column for the per-line `Layer` integer per the SSA v4.x
+  spec ("any integer. Subtitles having different layer numbers will
+  be ignored during the collision detection. Higher numbered layers
+  will be drawn over the lower numbered."). The base `parse` reads
+  the `Format:` order, splits each event line, and drops the column
+  on the floor (the shared `SubtitleCue` IR has no slot for the
+  per-event render-order integer), and the round-trip writer fills
+  the column with a literal `0`.
+  `oxideav_ass::parse_layer_field(field) -> LayerOverride` lifts the
+  column into a typed two-state enum: `Default` (empty column /
+  whitespace / the literal `0` in any sign form `0` / `+0` / `-0` —
+  equivalent to "no per-event override; the base layer is `0` for
+  both collision grouping and paint ordering") versus `Layer(i32)`
+  (an explicit non-zero signed integer). The variant carries a
+  signed `i32` because the spec's wording is "any integer";
+  negative layers are legal and appear in hand-authored scripts as
+  a deliberate "draw behind everything else" choice. The variant is
+  `Copy + Eq` and a zero-cost `as_layer(self) -> Option<i32>`
+  accessor plus a one-step `resolve(self) -> i32` "give me the
+  effective render-order integer" path (with `Default` mapping to
+  the spec's base `0`) round out the surface. Malformed columns
+  (non-numeric content, bare `+` / `-`, `i32` overflow) collapse to
+  `Default` so the parser stays total — the renderer transparently
+  uses the base layer `0`, mirroring how the SSA reference treats an
+  unset event-layer column. 20 unit tests cover empty,
+  whitespace-only, the literal `0` in every sign form, explicit
+  positive / negative / leading-`+` values, leading-zero magnitude
+  padding (parsed as decimal, not octal), surrounding-whitespace
+  tolerance, non-numeric rejection, `i32::MIN` and `i32::MAX`
+  boundary round-trip, overflow rejection on both signs,
+  bare-sign rejection, the `as_layer` accessor on both variants,
+  the `resolve` accessor on both variants, the `Default` trait impl,
+  `Copy + Eq` ergonomics, and the spec's two rendering ergonomics
+  (`==` collision grouping + ascending `Ord` paint order).
 - **Typed per-event margin accessor** — the dialogue `Format:` row
   reserves three columns for per-line `MarginL` / `MarginR` /
   `MarginV` overrides per the SSA v4.x spec. The base `parse` reads
