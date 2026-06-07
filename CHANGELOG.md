@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed accessor for the `Effect:` column on `Dialogue:` event lines
+  (`oxideav_ass::parse_effect_field(&str) -> EventEffect`). The base
+  `parse` entry point reads the dialogue `Format:` row, splits each
+  event line on commas, and drops the `Effect` field because the
+  shared `SubtitleCue` IR has no slot for it — fine for the dominant
+  empty-column case but it loses any *transition effect* the script
+  asked for. The SSA v4.x specification documents four such effects
+  in the column with a small grammar: a case-sensitive keyword
+  followed by semicolon-separated parameters. The new
+  `event_effect` module models all four as a typed enum: `Karaoke`
+  (the obsolete per-word highlight from the SSA-v4 era, replaced by
+  the `\k` family of override tags), `Scroll up;y1;y2;delay
+  [;fadeawayheight]` and its `Scroll down;…` sibling (the rendered
+  line scrolls upward or downward inside a vertical region bounded
+  by `y1` and `y2`; both zero means "scroll the full height of the
+  screen" per the spec), and `Banner;delay[;lefttoright;
+  fadeawaywidth]` (the line is forced to a single visual row and
+  scrolled horizontally; the optional `lefttoright` flag picks the
+  direction, defaulting to right-to-left per the spec). `delay`
+  clamps to `0..=100`, `lefttoright` clamps to `0` / `1` and
+  surfaces as a `BannerDirection` enum, and the optional
+  `fadeawayheight` / `fadeawaywidth` trailing fields ride as
+  `Option<u32>`. The keyword match is case-sensitive per the spec's
+  "effect names are case sensitive and must appear exactly as shown"
+  rule, so `karaoke` lower / `KARAOKE` upper fall to a catch-all
+  `EventEffect::Other(String)` variant that captures the raw bytes
+  so a consumer can re-emit them verbatim through a write loop.
+  Malformed payloads (missing parameters, non-numeric values,
+  negative `delay`, invalid `lefttoright`) also collapse to `Other`
+  so the parser stays total — it never panics and never returns an
+  error. A `scroll_region()` accessor returns a normalised `(top,
+  bottom)` pair (smaller value first) for both `Scroll up` and
+  `Scroll down` variants since the spec calls out that "it doesn't
+  matter which value (top or bottom) comes first", and a
+  `scrolls_full_height()` accessor recognises the `y1 == y2 == 0`
+  shorthand. Nineteen unit tests cover the empty-column case,
+  every keyword variant with its required and optional parameters,
+  case-sensitivity, the `0..=100` `delay` clamp, fallback to
+  `Other` on malformed input, `BannerDirection` parsing of both
+  flag values plus the missing-flag default, the
+  `scroll_region()` normalisation, and the `scrolls_full_height()`
+  shorthand. The base `parse` continues to drop the column on the
+  IR-level cue; callers walk their own `Dialogue:` lines to feed
+  the new accessor, mirroring the existing `parse_attachments`
+  side-channel pattern.
 - `AnimatedRenderedDecoder` bakes `\shad<depth>` /
   `\xshad<depth>` / `\yshad<depth>` drop-shadow distance into the
   rasterised RGBA output. For every glyph on the line the renderer

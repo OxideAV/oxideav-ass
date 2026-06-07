@@ -24,6 +24,7 @@ pub mod attachment;
 pub mod codec;
 pub mod container;
 pub mod drawing;
+pub mod event_effect;
 #[cfg(feature = "render")]
 pub mod render;
 pub mod transform;
@@ -34,6 +35,7 @@ pub use animate::{
 };
 pub use attachment::{parse_attachments, Attachment, AttachmentKind};
 pub use drawing::parse_drawing;
+pub use event_effect::{parse_effect_field, BannerDirection, EventEffect};
 #[cfg(feature = "render")]
 pub use render::{make_animated_decoder, AnimatedRenderedDecoder};
 

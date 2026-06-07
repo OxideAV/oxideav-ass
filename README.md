@@ -287,6 +287,32 @@ What the parser understands and preserves on round-trip:
   `data: Vec<u8>` — consumers can feed font bytes straight into
   `oxideav-ttf` / `oxideav-otf` and picture bytes into the matching
   image decoder without re-implementing the SSA printable transform.
+- **Typed `Effect:` column accessor** — the dialogue `Format:` row
+  reserves a column for *transition effects* per the SSA v4.x spec.
+  The base `parse` reads the `Format:` order, splits each event line,
+  and drops the column on the floor (the shared IR has no slot for
+  it). `oxideav_ass::parse_effect_field(field) -> EventEffect` lifts
+  the column into a typed enum covering the four spec-defined
+  effects: `Karaoke` (the obsolete per-word highlight from the SSA-v4
+  era, replaced by the `\k` family of override tags), `Scroll
+  up;y1;y2;delay[;fadeawayheight]` + the matching `Scroll
+  down;…` sibling (vertical scroll inside a `[y1, y2]` pixel band,
+  both zero means "scroll the full height of the screen"), and
+  `Banner;delay[;lefttoright;fadeawaywidth]` (forced single-row
+  horizontal scroll; `BannerDirection::RightToLeft` is the
+  spec-default when the optional flag is missing). The keyword match
+  is case-sensitive per the spec; anything that does not fit one of
+  the four keywords surfaces on `EventEffect::Other(String)` with
+  the raw bytes captured so a consumer can re-emit them verbatim
+  through a write loop, and malformed payloads (missing parameters,
+  non-numeric values, negative `delay`, invalid `lefttoright`)
+  collapse to `Other` as well so the parser stays total. `delay`
+  clamps to `0..=100` per the spec's slow-down knob range with `0`
+  meaning "as fast as possible". A `scroll_region()` accessor
+  returns a normalised `(top, bottom)` pair for both `Scroll`
+  variants since the spec lets the script pass top / bottom in
+  either order, and a `scrolls_full_height()` helper recognises the
+  `y1 == y2 == 0` shorthand.
 
 Out of scope for this crate:
 
