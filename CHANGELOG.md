@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed accessor for the per-event `MarginL` / `MarginR` / `MarginV`
+  columns on `Dialogue:` event lines
+  (`oxideav_ass::parse_margin_field(&str) -> MarginOverride`). The
+  base `parse` entry point reads the dialogue `Format:` row, splits
+  each event line on commas, and drops the three margin columns on
+  the floor because the shared `SubtitleCue` IR has no slot for
+  per-event margin overrides. The round-trip writer fills each
+  column with a literal `0`, which is fine for the dominant case but
+  loses any per-line override the original script requested. The SSA
+  v4.x specification defines each column the same way: a "4-figure"
+  pixel pad with the carve-out *"All zeroes means the default
+  margins defined by the style are used"*. The new `dialogue_margin`
+  module captures that two-state semantic as a `MarginOverride`
+  enum: `Default` (empty column / whitespace / the `0` shorthand
+  in any padded form `0`/`00`/`000`/`0000`) versus `Pixels(u32)`
+  (an explicit, non-zero pixel count). The variant is `Copy + Eq`
+  so it round-trips freely through structs and matches. Helper
+  accessors round out the surface: `as_pixels(self) -> Option<u32>`
+  for the `style.margin.or(override.as_pixels())` chain, and
+  `resolve_with_style(self, style_margin: u32) -> u32` for the
+  one-step "give me the final pixel value" path the renderer
+  needs. Malformed columns (negative integers, sign prefixes,
+  non-numeric content, `u32` overflow) collapse to `Default` so the
+  parser stays total — the renderer transparently picks up the
+  style's matching margin, mirroring how the SSA reference treats
+  the all-zero shorthand. The same function handles all three axes
+  (the grammar is identical); callers select the axis at the call
+  site by zipping `Format:` field names against split columns. 15
+  unit tests cover empty, whitespace-only, every padded zero form,
+  explicit pixel values with and without leading zero padding,
+  surrounding whitespace tolerance, negative-sign rejection,
+  `+`-sign rejection, alpha / hex / scientific / decimal-point
+  rejection, `u32` overflow, the `as_pixels` accessor on both
+  variants, the `resolve_with_style` fallback chain, the `Default`
+  trait impl, and `Copy + Eq` ergonomics.
+
 - Typed accessor for the `Effect:` column on `Dialogue:` event lines
   (`oxideav_ass::parse_effect_field(&str) -> EventEffect`). The base
   `parse` entry point reads the dialogue `Format:` row, splits each

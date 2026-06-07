@@ -313,6 +313,30 @@ What the parser understands and preserves on round-trip:
   variants since the spec lets the script pass top / bottom in
   either order, and a `scrolls_full_height()` helper recognises the
   `y1 == y2 == 0` shorthand.
+- **Typed per-event margin accessor** — the dialogue `Format:` row
+  reserves three columns for per-line `MarginL` / `MarginR` /
+  `MarginV` overrides per the SSA v4.x spec. The base `parse` reads
+  the `Format:` order, splits each event line, and drops the three
+  columns on the floor (the shared IR has no slot for per-event
+  margin overrides), and the round-trip writer fills the columns
+  with literal `0`s.
+  `oxideav_ass::parse_margin_field(field) -> MarginOverride` lifts
+  any of the three columns into a typed two-state enum: `Default`
+  (empty column / whitespace / the SSA `0` shorthand in any padded
+  form — the spec's "4-figure" wording lets a script pad to a fixed
+  width, so `0` / `00` / `000` / `0000` all mean "fall back to the
+  style's matching margin") versus `Pixels(u32)` (an explicit
+  non-zero pixel count). The variant is `Copy + Eq` and a
+  zero-cost `as_pixels(self) -> Option<u32>` accessor plus a
+  one-step `resolve_with_style(self, style_margin: u32) -> u32`
+  fallback chain round out the surface. Malformed columns
+  (negative integers, sign prefixes, non-numeric content, `u32`
+  overflow) collapse to `Default` so the parser stays total — the
+  renderer transparently picks up the style's matching margin,
+  mirroring how the SSA reference treats the all-zero shorthand.
+  The same function handles all three axes; the grammar is
+  identical and callers select the axis at the call site by
+  zipping `Format:` field names against split columns.
 
 Out of scope for this crate:
 

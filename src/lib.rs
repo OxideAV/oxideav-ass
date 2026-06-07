@@ -23,6 +23,7 @@ pub mod animate;
 pub mod attachment;
 pub mod codec;
 pub mod container;
+pub mod dialogue_margin;
 pub mod drawing;
 pub mod event_effect;
 #[cfg(feature = "render")]
@@ -34,6 +35,7 @@ pub use animate::{
     KaraokeSpan, RenderState,
 };
 pub use attachment::{parse_attachments, Attachment, AttachmentKind};
+pub use dialogue_margin::{parse_margin_field, MarginOverride};
 pub use drawing::parse_drawing;
 pub use event_effect::{parse_effect_field, BannerDirection, EventEffect};
 #[cfg(feature = "render")]
