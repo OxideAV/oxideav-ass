@@ -372,6 +372,38 @@ What the parser understands and preserves on round-trip:
   The same function handles all three axes; the grammar is
   identical and callers select the axis at the call site by
   zipping `Format:` field names against split columns.
+- **Typed per-event `Name` accessor** — the dialogue `Format:` row
+  reserves a column for the per-line character / actor name per the
+  SSA v4.x spec ("Field 5: Name — Character name. This is the name of
+  the character who speaks the dialogue. It is for information only,
+  to make the script easier to follow when editing/timing."). The
+  base `parse` reads the `Format:` order, splits each event line, and
+  drops the column on the floor (the shared `SubtitleCue` IR has no
+  slot for the per-event speaker label), and the round-trip writer
+  fills the column with an empty cell.
+  `oxideav_ass::parse_name_field(field) -> NameOverride` lifts the
+  column into a typed two-state enum: `Unset` (empty column or
+  whitespace-only — the dominant case in real scripts; equivalent to
+  "no per-event speaker label") versus `Name(String)` (an explicit
+  non-empty character / actor name, surrounding whitespace trimmed).
+  The accessors `as_name(&self) -> Option<&str>`,
+  `into_name(self) -> Option<String>`, `is_set(&self) -> bool`, and
+  `resolve(&self) -> &str` (with `Unset` mapping to the empty string)
+  round out the surface. Per the spec the column is informational
+  only and renderers ignore it; the accessor exists so editors and
+  downstream tools that surface a per-line speaker column do not need
+  to re-implement the dialogue-row split themselves. The parser is
+  total — there is no error path; commas are not representable inside
+  the column because the CSV split has already terminated it. 21 unit
+  tests cover empty / whitespace-only columns, ASCII names, names
+  containing inner spaces, surrounding-whitespace trimming, inner
+  multi-space preservation, non-ASCII (CJK / Latin-with-diacritics /
+  Greek) round-trip, punctuation (apostrophes / periods /
+  parentheses), single-character names, the four accessors on both
+  variants, the `Default` trait impl, `Eq` / `Clone` ergonomics,
+  trim-equivalence between padded and unpadded forms, the
+  `Unset`-vs-explicit-empty distinction at the constructor boundary,
+  and a 1024-byte long-name round-trip.
 
 Out of scope for this crate:
 

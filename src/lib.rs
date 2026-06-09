@@ -25,6 +25,7 @@ pub mod codec;
 pub mod container;
 pub mod dialogue_layer;
 pub mod dialogue_margin;
+pub mod dialogue_name;
 pub mod drawing;
 pub mod event_effect;
 #[cfg(feature = "render")]
@@ -38,6 +39,7 @@ pub use animate::{
 pub use attachment::{parse_attachments, Attachment, AttachmentKind};
 pub use dialogue_layer::{parse_layer_field, LayerOverride};
 pub use dialogue_margin::{parse_margin_field, MarginOverride};
+pub use dialogue_name::{parse_name_field, NameOverride};
 pub use drawing::parse_drawing;
 pub use event_effect::{parse_effect_field, BannerDirection, EventEffect};
 #[cfg(feature = "render")]
