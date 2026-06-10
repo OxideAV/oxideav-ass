@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed accessor for the `BorderStyle` column of a `[V4+ Styles]` /
+  `[V4 Styles]` `Style:` definition
+  (`oxideav_ass::parse_border_style_field(&str) -> BorderStyle`). The
+  base `parse` entry point decodes the style columns the shared
+  `SubtitleStyle` IR has a slot for (name, font, sizes, colours, the
+  bold / italic / underline / strikeout flags, alignment, margins,
+  outline and shadow widths) and reads past the `BorderStyle` column —
+  the IR carries no field for the rendering mode. The SSA v4.x / ASS
+  specification documents the column as *"BorderStyle. 1 = Outline +
+  drop shadow, 3 = Opaque box."* The new `style_border` module lifts
+  the column into a `BorderStyle` enum: `OutlineDropShadow` (the
+  literal `1`, and the spec's dominant mode where the text is drawn
+  with an outline and a drop shadow whose widths come from the
+  neighbouring `Outline` / `Shadow` columns) versus `OpaqueBox` (the
+  literal `3`, where the subtitle text sits on a filled rectangle in
+  the outline colour so the `Outline` / `Shadow` widths no longer
+  describe an outline + drop shadow). The enum is `Copy + Eq + Default`
+  (defaulting to `OutlineDropShadow`). Helper accessors round out the
+  surface: `as_code(self) -> u8` round-trips the raw spec integer (`1`
+  or `3`) back into the column, and `is_opaque_box(self) -> bool` lets
+  a renderer branch between the outline + drop-shadow path and the
+  box-backdrop path. The parser is total — empty, whitespace-only,
+  non-numeric, out-of-range, and any integer other than the two
+  spec-defined values all collapse to `OutlineDropShadow`, mirroring
+  how the SSA reference treats an unrecognised value; a leading `+` on
+  the magnitude and leading-zero decimal padding are tolerated. 15
+  unit tests cover the two spec values, empty / whitespace columns,
+  surrounding-whitespace trimming, the leading-`+` and leading-zero
+  forms, the SSA-era `0` and the unused `2` / `4` collapsing to the
+  default mode, non-numeric and overflow rejection, both accessors on
+  both variants, the `Default` trait impl, `Copy + Eq` ergonomics, and
+  an invariant check that `as_code` only ever emits a valid spec
+  integer.
+
 - Typed accessor for the per-event `Layer` column on `Dialogue:` event
   lines (`oxideav_ass::parse_layer_field(&str) -> LayerOverride`). The
   base `parse` entry point reads the dialogue `Format:` row, splits

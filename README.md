@@ -404,6 +404,33 @@ What the parser understands and preserves on round-trip:
   trim-equivalence between padded and unpadded forms, the
   `Unset`-vs-explicit-empty distinction at the constructor boundary,
   and a 1024-byte long-name round-trip.
+- **Typed `BorderStyle` style accessor** — the `[V4+ Styles]` /
+  `[V4 Styles]` `Format:` row reserves a column for the per-style
+  rendering mode per the SSA v4.x / ASS spec. The base `parse` decodes
+  the style columns the shared `SubtitleStyle` IR has a slot for (name,
+  font, sizes, colours, flags, alignment, margins, outline and shadow
+  widths) and reads past the `BorderStyle` column — the IR has no field
+  for the rendering mode. `oxideav_ass::parse_border_style_field(field)
+  -> BorderStyle` lifts the column into a typed enum covering the two
+  spec-defined values: `OutlineDropShadow` (`1` — the dominant mode;
+  text drawn with an outline plus drop shadow whose widths come from
+  the neighbouring `Outline` / `Shadow` columns) and `OpaqueBox` (`3` —
+  text sits on a filled rectangle in the outline colour, so the
+  `Outline` / `Shadow` widths no longer describe an outline + drop
+  shadow). The enum is `Copy + Eq + Default` (defaulting to
+  `OutlineDropShadow`); `as_code(self) -> u8` round-trips the raw spec
+  integer back into the column and `is_opaque_box(self) -> bool` lets a
+  renderer branch between the outline + drop-shadow path and the
+  box-backdrop path. The parser is total — empty / whitespace /
+  non-numeric / out-of-range columns and any integer other than the
+  two spec values (the SSA-era `0`, the unused `2` / `4`, negatives)
+  all collapse to `OutlineDropShadow`, mirroring how the SSA reference
+  treats an unrecognised value; a leading `+` and leading-zero decimal
+  padding are tolerated. 15 unit tests cover the two spec values,
+  empty / whitespace columns, trimming, the `+` / leading-zero forms,
+  the collapse cases, non-numeric + overflow rejection, both accessors
+  on both variants, the `Default` impl, `Copy + Eq` ergonomics, and an
+  invariant that `as_code` only ever emits a valid spec integer.
 
 Out of scope for this crate:
 
