@@ -214,8 +214,9 @@ What the parser understands and preserves on round-trip:
   is picked as `ceil(3 * sigma)` (3σ cutoff captures > 99.7% of
   the kernel mass), and the blur runs through all four RGBA
   channels — so the softened glyph edges land back via alpha,
-  matching the spec's "blurs the edges of the text" effect for the
-  no-`\bord` text path the renderer covers today. `\be`'s
+  matching the spec's "blurs the edges of the text" effect (the
+  `\bord` ring is baked into the same buffer, so bordered edges
+  soften the same way). `\be`'s
   iterative box-blur strength is baked in as an N-pass 3×3 separable
   box average over the rasterised RGBA buffer (including alpha; runs
   *after* the `\blur` Gaussian step), matching the Aegisub spec's
@@ -258,8 +259,27 @@ What the parser understands and preserves on round-trip:
   accept negative depths; the shadow is disabled only when both X
   and Y distances are zero. The cue-level `\fad` / `\fade`
   envelope stays on the outer `Group::opacity` and composes
-  multiplicatively over both the shadow and primary passes. Opt
-  out via `default-features = false`.
+  multiplicatively over both the shadow and primary passes. The
+  `\bord<width>` / `\xbord<width>` / `\ybord<width>` border is
+  baked in as a filled-and-stroked glyph silhouette pushed *under*
+  each glyph's primary fill (and after the shadow node): the
+  stroke is centred on the glyph edge at twice the border width so
+  the visible ring extends exactly `width` pixels outward once the
+  fill covers the inner half, with round caps + joins so the ring
+  stays uniform at sharp corners. The ring colour comes from `\3c`
+  (defaulting to opaque black like the shadow's `\4c` fallback),
+  the ring alpha from `\3a` on the usual `255 - ass_a` wire
+  mapping; `\bord0` (or no override) skips the pass entirely per
+  the spec's "set the size to 0 to disable the border entirely"
+  rule, and `\bord` ramps inside `\t(...)` resample the ring width
+  at every frame. An unequal `\xbord` / `\ybord` pair is reduced
+  to an isotropic ring at the larger width — a stroked outline has
+  a single width, and the spec describes the per-axis form as an
+  anamorphic-rendering correction, so real pairs stay close. When
+  both `\bord` and `\shad` are active the shadow copy carries the
+  same stroke repainted in the shadow colour, so the shadow is
+  cast by the *bordered* silhouette (the spec notes `\shad` "works
+  similar to \bord"). Opt out via `default-features = false`.
 - `\N` hard line break, `\h` hard space, `\n` soft break.
 - ASS timestamp format `H:MM:SS.cc` (centiseconds).
 - Commas inside the `Text` field are preserved (the CSV splitter stops

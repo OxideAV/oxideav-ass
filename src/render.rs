@@ -23,7 +23,20 @@
 //!    (`\fsp<spacing>`) injected as an extra `fsp` script-pixel gap
 //!    between each pair of adjacent rendered glyphs and folded into
 //!    each line's measured width so the word-wrap step picks the same
-//!    breakpoints the placement loop will produce — then wrap them in
+//!    breakpoints the placement loop will produce. When
+//!    `RenderState::border` (`\bord` / `\xbord` / `\ybord`) is active,
+//!    each glyph gains an extra border node *under* its primary fill:
+//!    the glyph silhouette filled **and** stroked in the `\3c` border
+//!    colour (round caps + joins), with the stroke centred on the
+//!    glyph edge at twice the border width so the visible ring extends
+//!    exactly `bord` pixels outward once the fill covers the inner
+//!    half. Per-axis `\xbord` / `\ybord` pairs are reduced to an
+//!    isotropic ring at the larger of the two widths (the per-axis
+//!    form exists for anamorphic correction per the override-tag
+//!    reference, so the two values stay close in practice); the
+//!    rasteriser interprets stroke widths in path-local units, so the
+//!    pixel width is divided by each glyph transform's scale factor
+//!    before it lands on the node. The glyph nodes are wrapped in
 //!    a `Group` whose:
 //!    - `transform` composes the animation's `move` ∘ pivoted
 //!      `\frx`/`\fry`/`\frz` ∘ `\fscx`/`\fscy` matrix (3D rotations
@@ -46,15 +59,16 @@
 //!    mass per the standard normal distribution). The blur runs on
 //!    the rasterised RGBA buffer including the alpha channel so the
 //!    softened edges land back through alpha — matching the spec's
-//!    "blurs the edges of the text" behaviour for the no-border case
-//!    the renderer covers today.
+//!    "blurs the edges of the text" behaviour; since the `\bord`
+//!    ring is baked into the same buffer, bordered edges soften the
+//!    same way.
 //! 7. If `RenderState::be_strength > 0`, post-process the RGBA buffer
 //!    again with `N` iterations of a 3×3 box-blur. Per the Aegisub
 //!    override-tag reference, `\be<strength>` is *"the number of times
 //!    to apply the regular effect"* — a separable 1-pixel-radius box
 //!    average. The renderer runs the box pass through all four RGBA
 //!    channels (including alpha) so the softened silhouette falls
-//!    back through alpha for the no-border text case, matching the
+//!    back through alpha (border ring included), matching the
 //!    spec's *"blurs the edges of the text"* behaviour and pairing
 //!    with the Gaussian `\blur` step that runs first. The two filters
 //!    stay on independent channels per the reference's *"more advanced
@@ -68,9 +82,9 @@
 use std::collections::VecDeque;
 
 use oxideav_core::{
-    CodecId, Decoder, Frame, Group, Node, Packet, Paint, Path, PathNode, Point, Result,
-    Rgba as CoreRgba, Segment, SubtitleCue, TextAlign, TimeBase, Transform2D, VectorFrame,
-    VideoFrame, VideoPlane,
+    CodecId, Decoder, Frame, Group, LineCap, LineJoin, Node, Packet, Paint, Path, PathNode, Point,
+    Result, Rgba as CoreRgba, Segment, Stroke, SubtitleCue, TextAlign, TimeBase, Transform2D,
+    VectorFrame, VideoFrame, VideoPlane,
 };
 use oxideav_scribe::{FaceChain, Shaper};
 
@@ -331,6 +345,41 @@ impl AnimatedRenderedDecoder {
             };
             [r, g, b, a]
         };
+        // Border (`\bord` / `\xbord` / `\ybord`) outline pass. Per the
+        // override-tag reference, `\bord<size>` draws a border of
+        // `size` pixels around the text (decimal allowed, never
+        // negative; `0` disables it entirely), and `\xbord` / `\ybord`
+        // set the per-axis widths independently — the per-axis form
+        // exists "for correcting the border size for anamorphic
+        // rendering", so the two values stay close in real scripts.
+        // The renderer reduces an unequal pair to an isotropic ring at
+        // the larger width (a stroked outline has a single width; the
+        // documented use keeps the approximation small) — see the
+        // module docs. The border colour comes from `\3c`
+        // (`state.outline_color`, defaulting to opaque black when the
+        // override is absent — the same fallback the shadow pass uses
+        // for `\4c`), and the border alpha follows the `\Xa`
+        // convention via `\3a` (wire `0` = opaque, `255` =
+        // transparent, mapped via `255 - ass_a`).
+        //
+        // The carried value is the *stroke* width in canvas pixels:
+        // twice the border width, because a stroke is centred on the
+        // glyph edge — the fill pass painted on top covers the inner
+        // half, leaving a visible ring of exactly `bord` pixels
+        // outside the glyph. The per-glyph loop divides this by each
+        // glyph transform's scale factor since the rasteriser
+        // interprets stroke widths in path-local units.
+        let border_pass: Option<(f32, CoreRgba)> = match state.border {
+            Some((xb, yb)) if xb.max(yb) > 0.0 => {
+                let (br, bg, bb) = state.outline_color.unwrap_or((0, 0, 0));
+                let ba = match state.outline_alpha {
+                    Some(ass_a) => 255u8.saturating_sub(ass_a),
+                    None => 255,
+                };
+                Some((2.0 * xb.max(yb), CoreRgba::new(br, bg, bb, ba)))
+            }
+            _ => None,
+        };
         for (i, line) in visual_lines.iter().enumerate() {
             let glyphs = Shaper::shape_to_paths(face, line, size_px);
             // Per the Aegisub override-tag reference, `\fsp` inserts an
@@ -416,14 +465,49 @@ impl AnimatedRenderedDecoder {
                 let fsp_shift = (gi as f32) * fsp;
                 let absolute =
                     Transform2D::translate(pen_x + fsp_shift, baseline_y).compose(&glyph_xform);
+                // Stroke widths are interpreted by the rasteriser in
+                // path-local units and the glyph paths live in font
+                // units under `glyph_xform`'s scale — convert the
+                // canvas-pixel stroke width into the glyph's local
+                // space so the painted ring comes out at the requested
+                // pixel width.
+                let local_scale = transform_scale(&glyph_xform);
                 if let Some((xshad, yshad, ref shad_paint)) = shadow_paint {
                     let shadow_absolute =
                         Transform2D::translate(pen_x + fsp_shift + xshad, baseline_y + yshad)
                             .compose(&glyph_xform);
-                    let shadow_painted = repaint_node(node.clone(), shad_paint);
+                    // When a border is active the shadow is cast by
+                    // the *bordered* silhouette — the spec describes
+                    // `\shad` as the distance between the character
+                    // and its shadow and notes it "works similar to
+                    // \bord", so the shadow copy carries the same
+                    // stroke (repainted in the shadow colour) on top
+                    // of its fill.
+                    let shadow_painted = match border_pass {
+                        Some((stroke_w_px, _)) => {
+                            let s = border_stroke(stroke_w_px / local_scale, shad_paint.clone());
+                            paint_with_stroke(node.clone(), shad_paint, &s)
+                        }
+                        None => repaint_node(node.clone(), shad_paint),
+                    };
                     inner.children.push(Node::Group(Group {
                         transform: shadow_absolute,
                         children: vec![shadow_painted],
+                        ..Group::default()
+                    }));
+                }
+                // Border pass: the full glyph silhouette filled *and*
+                // stroked in the `\3c` border colour, under the
+                // primary fill. Filling (not just stroking) keeps a
+                // translucent `\1a` primary showing border colour
+                // through the glyph interior instead of a hole.
+                if let Some((stroke_w_px, border_rgba)) = border_pass {
+                    let border_paint = Paint::Solid(border_rgba);
+                    let s = border_stroke(stroke_w_px / local_scale, border_paint.clone());
+                    let bordered = paint_with_stroke(node.clone(), &border_paint, &s);
+                    inner.children.push(Node::Group(Group {
+                        transform: absolute,
+                        children: vec![bordered],
                         ..Group::default()
                     }));
                 }
@@ -540,7 +624,7 @@ impl AnimatedRenderedDecoder {
         // strengths the reference describes as "isn't always very
         // visible". The box pass touches all four RGBA channels so the
         // softened silhouette falls back through alpha, matching the
-        // spec's no-border "blurs the edges of the text" behaviour.
+        // spec's "blurs the edges of the text" behaviour.
         if state.be_strength > 0 {
             apply_be_post(&mut buf, self.width, self.height, state.be_strength);
         }
@@ -897,6 +981,75 @@ fn reversed_path_commands(path: &Path) -> Vec<oxideav_core::PathCommand> {
     out
 }
 
+/// Build the border-pass stroke: `width` path-local units, painted
+/// with `paint`, round caps + joins. Round joins avoid the miter
+/// spikes a default miter join would throw off sharp glyph corners —
+/// the override-tag reference describes the result simply as "the
+/// border around the text", and a rounded ring is the reading that
+/// keeps the ring width uniform at corners.
+fn border_stroke(width: f32, paint: Paint) -> Stroke {
+    Stroke::new(width, paint)
+        .with_cap(LineCap::Round)
+        .with_join(LineJoin::Round)
+}
+
+/// The (isotropic) scale factor of `t` — `sqrt(|det|)`. Used to
+/// convert a canvas-pixel stroke width into a glyph's path-local
+/// units. A degenerate (zero-determinant) transform falls back to
+/// `1.0` so the stroke stays finite.
+fn transform_scale(t: &Transform2D) -> f32 {
+    let det = (t.a * t.d - t.b * t.c).abs();
+    if det > f32::EPSILON {
+        det.sqrt()
+    } else {
+        1.0
+    }
+}
+
+/// Recursively set both `fill` and `stroke` on every `PathNode` in
+/// `node` — the border-pass companion of [`repaint_node`], which only
+/// replaces the fill.
+///
+/// Like [`repaint_node`], any producer-supplied `Group::cache_key` is
+/// cleared on the way down: the key hashes the producer's identity
+/// tuple (glyph + size), not the paint, so a repainted copy must not
+/// advertise the original's memoised bitmap (see `Group::cache_key`'s
+/// "None means render fresh every time" contract).
+fn paint_with_stroke(node: Node, paint: &Paint, stroke: &Stroke) -> Node {
+    match node {
+        Node::Path(PathNode {
+            path, fill_rule, ..
+        }) => Node::Path(PathNode {
+            path,
+            fill: Some(paint.clone()),
+            stroke: Some(stroke.clone()),
+            fill_rule,
+        }),
+        Node::Group(mut g) => {
+            g.cache_key = None;
+            g.children = g
+                .children
+                .into_iter()
+                .map(|c| paint_with_stroke(c, paint, stroke))
+                .collect();
+            Node::Group(g)
+        }
+        other => other,
+    }
+}
+
+/// Recursively replace the fill on every `PathNode` in `node`.
+///
+/// Any producer-supplied `Group::cache_key` is cleared on the way
+/// down. Per the `Group::cache_key` contract, the key hashes the
+/// *producer's* identity tuple — for shaped glyphs that's the glyph +
+/// size, not the paint — and a downstream rasteriser is free to
+/// memoise the rendered bitmap under it. The renderer paints the same
+/// glyph geometry several times per frame with different paints
+/// (shadow / border / primary fill), so a repainted copy that kept
+/// the original key would alias the first copy's memoised bitmap.
+/// `None` is the documented "do not cache; render fresh every time"
+/// setting.
 fn repaint_node(node: Node, paint: &Paint) -> Node {
     match node {
         Node::Path(PathNode {
@@ -911,6 +1064,7 @@ fn repaint_node(node: Node, paint: &Paint) -> Node {
             fill_rule,
         }),
         Node::Group(mut g) => {
+            g.cache_key = None;
             g.children = g
                 .children
                 .into_iter()
@@ -1468,6 +1622,72 @@ mod tests {
             c2 > c1,
             "expected more iterations to spread alpha further: c1={c1} c2={c2}"
         );
+    }
+
+    #[test]
+    fn transform_scale_of_identity_is_one() {
+        assert!((super::transform_scale(&Transform2D::identity()) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn transform_scale_is_sqrt_of_determinant() {
+        // Uniform scale(3, 3) → factor 3.
+        let t = Transform2D::scale(3.0, 3.0);
+        assert!((super::transform_scale(&t) - 3.0).abs() < 1e-5);
+        // Anisotropic scale(4, 1) → sqrt(4) = 2 (the geometric mean).
+        let t = Transform2D::scale(4.0, 1.0);
+        assert!((super::transform_scale(&t) - 2.0).abs() < 1e-5);
+        // Rotation alone preserves area → factor 1.
+        let t = Transform2D::rotate(0.7);
+        assert!((super::transform_scale(&t) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn transform_scale_degenerate_falls_back_to_one() {
+        // Zero determinant (collapsed axis) — fall back to 1.0 so a
+        // stroke width divided by it stays finite.
+        let t = Transform2D::scale(0.0, 5.0);
+        assert!((super::transform_scale(&t) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn border_stroke_uses_round_caps_and_joins() {
+        let s = super::border_stroke(4.0, Paint::Solid(CoreRgba::new(1, 2, 3, 4)));
+        assert!((s.width - 4.0).abs() < 1e-6);
+        assert_eq!(s.cap, LineCap::Round);
+        assert_eq!(s.join, LineJoin::Round);
+        match s.paint {
+            Paint::Solid(c) => assert_eq!((c.r, c.g, c.b, c.a), (1, 2, 3, 4)),
+            _ => panic!("expected solid paint"),
+        }
+    }
+
+    #[test]
+    fn paint_with_stroke_sets_fill_and_stroke_recursively() {
+        // A group wrapping a bare path node: both the fill and the
+        // stroke must land on the leaf.
+        let mut p = Path::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.line_to(Point::new(1.0, 0.0));
+        p.close();
+        let node = Node::Group(Group {
+            children: vec![Node::Path(PathNode::new(p))],
+            ..Group::default()
+        });
+        let paint = Paint::Solid(CoreRgba::new(9, 8, 7, 6));
+        let stroke = super::border_stroke(2.5, paint.clone());
+        let painted = super::paint_with_stroke(node, &paint, &stroke);
+        match painted {
+            Node::Group(g) => match &g.children[0] {
+                Node::Path(pn) => {
+                    assert!(pn.fill.is_some(), "fill not set");
+                    let s = pn.stroke.as_ref().expect("stroke not set");
+                    assert!((s.width - 2.5).abs() < 1e-6);
+                }
+                _ => panic!("expected path node"),
+            },
+            _ => panic!("expected group"),
+        }
     }
 
     #[test]

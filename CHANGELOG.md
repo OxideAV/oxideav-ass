@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AnimatedRenderedDecoder` now bakes the typed `\bord<width>` /
+  `\xbord<width>` / `\ybord<width>` border into the rasterised RGBA
+  output. Per the override-tag reference, `\bord<size>` "changes the
+  width of the border around the text" (decimal widths allowed, never
+  negative; `0` disables the border entirely), and the per-axis
+  `\xbord` / `\ybord` forms exist "for correcting the border size for
+  anamorphic rendering". For every glyph the renderer pushes a border
+  node *under* the primary fill (and after the shadow node): the full
+  glyph silhouette filled **and** stroked in the `\3c` border colour,
+  with the stroke centred on the glyph edge at twice the border width
+  so the visible ring extends exactly `width` pixels outward once the
+  fill covers the inner half. Round caps + joins keep the ring width
+  uniform at sharp corners (a miter join would spike). The ring
+  colour defaults to opaque black when `\3c` is absent (the same
+  fallback the shadow pass uses for `\4c`), and the ring alpha
+  follows the `\Xa` wire convention via `\3a` (`0` = opaque, `255` =
+  transparent, mapped as `255 - ass_a`). An unequal `\xbord` /
+  `\ybord` pair is reduced to an isotropic ring at the larger width —
+  a stroked outline has a single width, and the spec's anamorphic-
+  correction use keeps real pairs close. When both `\bord` and
+  `\shad` are active the shadow copy carries the same stroke
+  repainted in the shadow colour, so the shadow is cast by the
+  *bordered* silhouette (the spec notes `\shad` "works similar to
+  \bord"). Because the rasteriser interprets stroke widths in
+  path-local units, the canvas-pixel width is divided by each glyph
+  transform's scale factor (`sqrt(|det|)`, with a degenerate-matrix
+  fallback to `1.0`) before it lands on the node. `\bord` was already
+  typed + animatable (`RenderState::border` since 0.0.7); this lands
+  the rasterisation. Eight new integration tests in `tests/render.rs`
+  cover: `\bord0` matching the baseline bbox exactly; `\bord4`
+  growing the ink bbox by ~4 px on all four edges; the `\3c` red ring
+  + surviving white fill; the default-black ring + surviving white
+  fill; `\3a&HFF&` muting the ring back to the baseline bbox; the
+  isotropic `\xbord5\ybord0` == `\bord5` reduction; a
+  `{\bord0\t(\bord6)}` ramp growing the bbox across time; and
+  `\bord3\shad6` extending the shadow's max_x / max_y beyond
+  `\shad6` alone. Five new unit tests pin the `sqrt(|det|)` scale
+  factor (identity / uniform / anisotropic / rotation / degenerate),
+  the round-cap + round-join stroke builder, and the recursive
+  fill+stroke repaint.
+
+### Fixed
+
+- Repainted glyph copies in the animated renderer kept the shaper's
+  producer `Group::cache_key`. Per the `oxideav-core` contract that
+  key hashes the producer's identity tuple (glyph + size) — not the
+  paint — and a downstream rasteriser is free to memoise the rendered
+  bitmap under it, so two differently-painted copies of the same
+  glyph (shadow vs border vs primary fill) could alias one
+  memoised rendering: a `\bord` + fill pair came out entirely in the
+  border colour with the white fill lost, and a fully-transparent
+  copy could blank every later copy of the same glyph. Both repaint
+  helpers now clear `cache_key` to `None` ("do not cache; render
+  fresh every time") on every group they descend into, so each
+  differently-painted copy rasterises independently. The new
+  white-fill-survives assertions in the border colour tests pin the
+  fix.
+
 - Typed accessor for the `BorderStyle` column of a `[V4+ Styles]` /
   `[V4 Styles]` `Style:` definition
   (`oxideav_ass::parse_border_style_field(&str) -> BorderStyle`). The

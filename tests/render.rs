@@ -1280,3 +1280,334 @@ fn shadow_alpha_fully_transparent_skips_shadow_pass() {
         "\\4a&HFF& failed to mute shadow on max_y: base={by1} muted={my1}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `\bord` / `\xbord` / `\ybord` border (outline) bake tests.
+//
+// Per the Aegisub override-tag reference:
+//
+// * `\bord<size>` changes the width of the border around the text;
+//   `0` disables the border entirely; decimal widths are allowed and
+//   the width can never be negative.
+// * `\xbord<size>` / `\ybord<size>` set the per-axis widths
+//   independently ("for correcting the border size for anamorphic
+//   rendering"); a later `\bord` overrides both.
+// * `\3c&Hbbggrr&` sets the border colour; `\3a&Haa&` the border
+//   alpha (wire `0` = opaque, `255` = transparent).
+//
+// The renderer bakes the border as a filled-and-stroked silhouette in
+// the `\3c` colour under each glyph's primary fill, so a positive
+// `\bord` grows the ink bbox by ~`size` pixels on every edge, the
+// ring pixels carry the border colour, and `\3a&HFF&` snaps the bbox
+// back to baseline.
+
+/// Count pixels whose colour is dominated by the red channel — used
+/// to spot a `\3c&H0000FF&` (BGR wire order → red) border ring around
+/// a white primary fill.
+fn red_dominant_pixels(frame: &Frame) -> u64 {
+    let vf = match frame {
+        Frame::Video(v) => v,
+        _ => return 0,
+    };
+    let plane = match vf.planes.first() {
+        Some(p) => p,
+        None => return 0,
+    };
+    plane
+        .data
+        .chunks_exact(4)
+        .filter(|px| px[3] > 0 && px[0] > 150 && px[1] < 80 && px[2] < 80)
+        .count() as u64
+}
+
+#[test]
+fn bord_zero_matches_baseline_bbox() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\bord0` disables the border per spec ("Set the size to 0
+    // (zero) to disable the border entirely") — identical bbox to the
+    // no-override baseline.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,BORD\n");
+    let zero =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord0}}BORD\n");
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_zero = render_first_frame(&zero, 320, 120).expect("zero");
+    let bbox_base = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let bbox_zero = alpha_bbox(&f_zero, 320).expect("zero ink");
+
+    assert_eq!(
+        bbox_base, bbox_zero,
+        "\\bord0 changed the ink bbox: base={bbox_base:?} zero={bbox_zero:?}"
+    );
+}
+
+#[test]
+fn bord_expands_ink_bbox_on_all_four_edges() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\bord4` paints a 4-pixel ring outside the glyph edge, so every
+    // bbox edge moves outward by ~4 px (allow anti-aliasing slack:
+    // require at least 2 and at most 8 on each edge).
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,BORD\n");
+    let bordered =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord4}}BORD\n");
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_bord = render_first_frame(&bordered, 320, 120).expect("bordered");
+    let (bx0, by0, bx1, by1) = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let (ox0, oy0, ox1, oy1) = alpha_bbox(&f_bord, 320).expect("bordered ink");
+
+    let grow_left = bx0 as i32 - ox0 as i32;
+    let grow_top = by0 as i32 - oy0 as i32;
+    let grow_right = ox1 as i32 - bx1 as i32;
+    let grow_bottom = oy1 as i32 - by1 as i32;
+    for (label, g) in [
+        ("left", grow_left),
+        ("top", grow_top),
+        ("right", grow_right),
+        ("bottom", grow_bottom),
+    ] {
+        assert!(
+            (2..=8).contains(&g),
+            "\\bord4 {label} edge grew by {g} px (expected ~4); \
+             base=({bx0},{by0},{bx1},{by1}) bord=({ox0},{oy0},{ox1},{oy1})"
+        );
+    }
+}
+
+#[test]
+fn bord_ring_carries_3c_border_color() {
+    if load_face().is_none() {
+        return;
+    }
+    // White primary fill + `\3c&H0000FF&` (BGR wire order → red)
+    // border: the ring pixels outside the glyph must be red-dominant.
+    // The no-border baseline has no red-dominant pixels at all.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,BORD\n");
+    let red_ring = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord3\\3c&H0000FF&}}BORD\n"
+    );
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_ring = render_first_frame(&red_ring, 320, 120).expect("ring");
+
+    assert_eq!(
+        red_dominant_pixels(&f_base),
+        0,
+        "baseline render unexpectedly contains red-dominant pixels"
+    );
+    let ring_px = red_dominant_pixels(&f_ring);
+    assert!(
+        ring_px > 50,
+        "\\bord3\\3c&H0000FF& produced too few red ring pixels: {ring_px}"
+    );
+    // The primary fill must stay white *on top of* the border pass —
+    // pins the repaint path against the rasteriser's glyph-bitmap
+    // memoisation (a repainted glyph copy keeping the producer's
+    // cache key would alias the border's rendering and turn the
+    // whole glyph red).
+    let white_px = white_pixels(&f_ring);
+    assert!(
+        white_px > 50,
+        "primary fill lost under the border pass: white_px={white_px}"
+    );
+}
+
+/// Count opaque near-white pixels — the primary fill's signature in
+/// the border tests' white-on-transparent renders.
+fn white_pixels(frame: &Frame) -> u64 {
+    let vf = match frame {
+        Frame::Video(v) => v,
+        _ => return 0,
+    };
+    let plane = match vf.planes.first() {
+        Some(p) => p,
+        None => return 0,
+    };
+    plane
+        .data
+        .chunks_exact(4)
+        .filter(|px| px[3] > 200 && px[0] > 200 && px[1] > 200 && px[2] > 200)
+        .count() as u64
+}
+
+#[test]
+fn bord_default_border_color_is_black() {
+    if load_face().is_none() {
+        return;
+    }
+    // With no `\3c` override the border falls back to opaque black —
+    // the ring pixels must be dark while the glyph interior stays
+    // white. Pin "there exist opaque dark pixels" which the
+    // border-free baseline (all-white ink) cannot produce.
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,BORD\n");
+    let bordered =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord3}}BORD\n");
+
+    let dark_pixels = |frame: &Frame| -> u64 {
+        let vf = match frame {
+            Frame::Video(v) => v,
+            _ => return 0,
+        };
+        let plane = match vf.planes.first() {
+            Some(p) => p,
+            None => return 0,
+        };
+        plane
+            .data
+            .chunks_exact(4)
+            .filter(|px| px[3] > 200 && px[0] < 60 && px[1] < 60 && px[2] < 60)
+            .count() as u64
+    };
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_bord = render_first_frame(&bordered, 320, 120).expect("bordered");
+    assert_eq!(
+        dark_pixels(&f_base),
+        0,
+        "baseline render unexpectedly contains opaque dark pixels"
+    );
+    let ring_px = dark_pixels(&f_bord);
+    assert!(
+        ring_px > 50,
+        "\\bord3 default-black ring produced too few dark pixels: {ring_px}"
+    );
+    // The glyph interior stays white over the black ring.
+    let white_px = white_pixels(&f_bord);
+    assert!(
+        white_px > 50,
+        "primary fill lost under the default-black border: white_px={white_px}"
+    );
+}
+
+#[test]
+fn bord_3a_fully_transparent_mutes_border() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\3a&HFF&` — border alpha fully transparent. Even with a
+    // nonzero `\bord` width the ring contribution to the ink bbox
+    // must vanish (within rasteriser rounding).
+    let baseline = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,BORD\n");
+    let muted = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord4\\3a&HFF&}}BORD\n"
+    );
+
+    let f_base = render_first_frame(&baseline, 320, 120).expect("baseline");
+    let f_muted = render_first_frame(&muted, 320, 120).expect("muted");
+    let (bx0, by0, bx1, by1) = alpha_bbox(&f_base, 320).expect("baseline ink");
+    let (mx0, my0, mx1, my1) = alpha_bbox(&f_muted, 320).expect("muted ink");
+
+    for (label, b, m) in [
+        ("min_x", bx0, mx0),
+        ("min_y", by0, my0),
+        ("max_x", bx1, mx1),
+        ("max_y", by1, my1),
+    ] {
+        assert!(
+            (m as i32 - b as i32).abs() <= 1,
+            "\\3a&HFF& failed to mute border on {label}: base={b} muted={m}"
+        );
+    }
+}
+
+#[test]
+fn xbord_ybord_render_isotropically_at_the_larger_width() {
+    if load_face().is_none() {
+        return;
+    }
+    // The renderer reduces an unequal `\xbord` / `\ybord` pair to an
+    // isotropic ring at the larger width (a stroked outline has one
+    // width; the per-axis form exists for anamorphic correction per
+    // the spec, so real pairs stay close). `\xbord5\ybord0` therefore
+    // renders the same bbox as `\bord5`.
+    let per_axis = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\xbord5\\ybord0}}BORD\n"
+    );
+    let uniform =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord5}}BORD\n");
+
+    let f_pa = render_first_frame(&per_axis, 320, 120).expect("per-axis");
+    let f_u = render_first_frame(&uniform, 320, 120).expect("uniform");
+    let bbox_pa = alpha_bbox(&f_pa, 320).expect("per-axis ink");
+    let bbox_u = alpha_bbox(&f_u, 320).expect("uniform ink");
+    assert_eq!(
+        bbox_pa, bbox_u,
+        "isotropic reduction mismatch: per-axis={bbox_pa:?} uniform={bbox_u:?}"
+    );
+}
+
+#[test]
+fn bord_animates_via_t_block() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\bord` is animatable inside `\t(...)` per the override-tag
+    // reference's animatable-tag table. A `{\bord0\t(\bord6)}` ramp
+    // starts at zero border width and ends at 6 px, so the ink bbox
+    // at `t = end` is strictly wider *and* taller than at `t = 0`.
+    let ass = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord0\\t(\\bord6)}}BORD\n"
+    );
+    let face_a = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let face_b = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let inner_a = build_decoder(&ass);
+    let mut dec_a = AnimatedRenderedDecoder::new(inner_a, 320, 120, face_a);
+    dec_a.set_offset_ms(0);
+    let f_start = dec_a.receive_frame().expect("start");
+    let bbox_start = alpha_bbox(&f_start, 320).expect("ink start");
+
+    let inner_b = build_decoder(&ass);
+    let mut dec_b = AnimatedRenderedDecoder::new(inner_b, 320, 120, face_b);
+    dec_b.set_offset_ms(1000);
+    let f_end = dec_b.receive_frame().expect("end");
+    let bbox_end = alpha_bbox(&f_end, 320).expect("ink end");
+
+    let w_start = (bbox_start.2 - bbox_start.0) as i32;
+    let w_end = (bbox_end.2 - bbox_end.0) as i32;
+    let h_start = (bbox_start.3 - bbox_start.1) as i32;
+    let h_end = (bbox_end.3 - bbox_end.1) as i32;
+    assert!(
+        w_end > w_start && h_end > h_start,
+        "\\t(\\bord6) ramp did not grow ink: start=({w_start}x{h_start}) end=({w_end}x{h_end})"
+    );
+}
+
+#[test]
+fn shadow_silhouette_includes_border_stroke() {
+    if load_face().is_none() {
+        return;
+    }
+    // With both `\bord` and `\shad` active the shadow is cast by the
+    // *bordered* silhouette (the spec notes `\shad` "works similar to
+    // \bord"), so `\bord3\shad6` extends max_x / max_y further than
+    // `\shad6` alone by roughly the border width.
+    let shad_only =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\shad6}}BORD\n");
+    let both = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\bord3\\shad6}}BORD\n"
+    );
+
+    let f_s = render_first_frame(&shad_only, 320, 120).expect("shad only");
+    let f_b = render_first_frame(&both, 320, 120).expect("bord+shad");
+    let (_, _, sx1, sy1) = alpha_bbox(&f_s, 320).expect("shad ink");
+    let (_, _, ox1, oy1) = alpha_bbox(&f_b, 320).expect("bord+shad ink");
+
+    assert!(
+        ox1 as i32 >= sx1 as i32 + 2,
+        "bordered shadow did not extend max_x: shad-only={sx1} bord+shad={ox1}"
+    );
+    assert!(
+        oy1 as i32 >= sy1 as i32 + 2,
+        "bordered shadow did not extend max_y: shad-only={sy1} bord+shad={oy1}"
+    );
+}
