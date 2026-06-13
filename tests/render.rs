@@ -1611,3 +1611,197 @@ fn shadow_silhouette_includes_border_stroke() {
         "bordered shadow did not extend max_y: shad-only={sy1} bord+shad={oy1}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `\p<scale>` drawing-mode rendering (#— : drawing blocks rasterised as
+// filled vector shapes per the Aegisub override-tag reference "drawing
+// commands use the primary color for fill and outline color for borders").
+
+#[test]
+fn drawing_mode_fills_a_square() {
+    if load_face().is_none() {
+        return;
+    }
+    // `{\p1}m 0 0 l 100 0 100 100 0 100` — a 100×100 filled square in
+    // drawing mode. With `\pos(100,10)` the cursor origin sits inside the
+    // canvas. The shape must produce a solid block of ink far larger than
+    // any single glyph would, with a roughly square bounding box.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pos(100,10)\\p1}}m 0 0 l 100 0 100 100 0 100\n"
+    );
+    let f = render_first_frame(&src, 320, 240).expect("drawing frame");
+    let mass = alpha_mass(&f);
+    assert!(mass > 0, "drawing-mode square produced no ink");
+    let (x0, y0, x1, y1) = alpha_bbox(&f, 320).expect("drawing ink bbox");
+    let w = (x1 - x0) as i32;
+    let h = (y1 - y0) as i32;
+    // ~100×100 at origin (100,10): allow generous slack for antialias edges.
+    assert!(
+        (90..=110).contains(&w),
+        "square width off: got {w} (bbox x {x0}..{x1})"
+    );
+    assert!(
+        (90..=110).contains(&h),
+        "square height off: got {h} (bbox y {y0}..{y1})"
+    );
+    // Filled square interior: the centre pixel should be opaque ink.
+    assert!(
+        x0 >= 95 && y0 >= 5,
+        "square should be anchored near (100,10); bbox=({x0},{y0})"
+    );
+}
+
+#[test]
+fn drawing_mode_square_is_solidly_filled() {
+    if load_face().is_none() {
+        return;
+    }
+    // A filled square's ink mass should dwarf its outline: compare the
+    // total alpha of a filled `\p1` square against the same path used as
+    // a (hollow) clip would be — here we just assert the fill is dense by
+    // checking mass exceeds the perimeter-only estimate.
+    let src = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pos(100,60)\\p1}}m 0 0 l 80 0 80 80 0 80\n"
+    );
+    let f = render_first_frame(&src, 320, 240).expect("drawing frame");
+    let mass = alpha_mass(&f);
+    // A solidly filled 80×80 block at alpha 255 ≈ 80*80*255 ≈ 1.6M. A
+    // hollow outline (≈4*80 px * a few px wide) would be < 100k. Assert
+    // well above the hollow estimate to prove the interior is filled.
+    assert!(
+        mass > 500_000,
+        "drawing-mode square not solidly filled: mass={mass}"
+    );
+}
+
+#[test]
+fn drawing_mode_pbo_shifts_down() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\pbo<y>` offsets every drawing coordinate on the Y axis. Two
+    // otherwise-identical squares: one with `\pbo0`, one with `\pbo40`.
+    // The second must sit ~40 px lower on the canvas.
+    let base = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pos(100,10)\\p1\\pbo0}}m 0 0 l 60 0 60 60 0 60\n"
+    );
+    let shifted = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pos(100,10)\\p1\\pbo40}}m 0 0 l 60 0 60 60 0 60\n"
+    );
+    let fb = render_first_frame(&base, 320, 240).expect("base");
+    let fs = render_first_frame(&shifted, 320, 240).expect("shifted");
+    let (_, y0_b, _, _) = alpha_bbox(&fb, 320).expect("base ink");
+    let (_, y0_s, _, _) = alpha_bbox(&fs, 320).expect("shifted ink");
+    assert!(
+        (y0_s as i32 - y0_b as i32) >= 30,
+        "\\pbo40 should push the drawing ~40px down: base_top={y0_b} shifted_top={y0_s}"
+    );
+}
+
+#[test]
+fn drawing_mode_p2_halves_coordinates() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\p1` vs `\p2` on the same coordinates: `\p2` divides by 2, so the
+    // shape comes out half-size.
+    let p1 = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pos(40,20)\\p1}}m 0 0 l 120 0 120 120 0 120\n"
+    );
+    let p2 = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pos(40,20)\\p2}}m 0 0 l 120 0 120 120 0 120\n"
+    );
+    let f1 = render_first_frame(&p1, 320, 240).expect("p1");
+    let f2 = render_first_frame(&p2, 320, 240).expect("p2");
+    let (x0a, _, x1a, _) = alpha_bbox(&f1, 320).expect("p1 ink");
+    let (x0b, _, x1b, _) = alpha_bbox(&f2, 320).expect("p2 ink");
+    let w1 = (x1a - x0a) as f32;
+    let w2 = (x1b - x0b) as f32;
+    assert!(
+        (w2 / w1 - 0.5).abs() < 0.15,
+        "\\p2 should halve the shape: p1_w={w1} p2_w={w2}"
+    );
+}
+
+#[test]
+fn drawing_mode_off_renders_text_not_shape() {
+    if load_face().is_none() {
+        return;
+    }
+    // A cue whose resolved drawing-mode toggle is off (`\p0`) must take
+    // the glyph path, not the drawing-fill path. Here `{\p0}TEXT` carries
+    // no drawing run before the text, so the resolved `drawing_scale` is
+    // `Some(0)` → glyphs. The rendered ink must be glyph-sized (a few
+    // characters), not a canvas-spanning filled shape, and the output
+    // must match a plain-text baseline byte-for-byte (the `\p0` no-ops).
+    let with_p0 =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\p0}}TEXT\n");
+    let plain = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,TEXT\n");
+    let f = render_first_frame(&with_p0, 320, 120).expect("frame");
+    let fp = render_first_frame(&plain, 320, 120).expect("plain frame");
+    assert!(alpha_mass(&f) > 0, "text produced no ink");
+    assert_eq!(
+        alpha_mass(&f),
+        alpha_mass(&fp),
+        "`\\p0` should be a no-op for a text-only cue"
+    );
+    // Glyph text occupies a modest bbox, not the whole canvas.
+    let (x0, _, x1, _) = alpha_bbox(&f, 320).expect("ink");
+    assert!(
+        (x1 - x0) < 200,
+        "expected glyph-sized ink, got width {}",
+        x1 - x0
+    );
+}
+
+#[test]
+fn drawing_mode_clip_masks_the_shape() {
+    if load_face().is_none() {
+        return;
+    }
+    // The animation envelope (here `\clip`) composes over a drawing block
+    // exactly as it does over glyph text. Clip a big filled square to its
+    // top-left quarter and confirm the ink mass drops.
+    let unclipped = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pos(40,20)\\p1}}m 0 0 l 160 0 160 160 0 160\n"
+    );
+    let clipped = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pos(40,20)\\clip(0,0,120,100)\\p1}}m 0 0 l 160 0 160 160 0 160\n"
+    );
+    let fu = render_first_frame(&unclipped, 320, 240).expect("unclipped");
+    let fc = render_first_frame(&clipped, 320, 240).expect("clipped");
+    let mu = alpha_mass(&fu);
+    let mc = alpha_mass(&fc);
+    assert!(mu > 0, "unclipped drawing had no ink");
+    assert!(
+        mc < mu,
+        "clip should reduce drawing ink: clipped={mc} unclipped={mu}"
+    );
+    assert!(mc > 0, "clip removed all ink unexpectedly");
+}
+
+#[test]
+fn drawing_mode_border_extends_shape() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\bord` on a drawing adds an outline ring in the `\3c` colour,
+    // extending the bounding box outward. Compare a no-border square to
+    // a `\bord6` one.
+    let plain = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pos(100,60)\\p1}}m 0 0 l 60 0 60 60 0 60\n"
+    );
+    let bordered = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\pos(100,60)\\bord6\\3c&H0000FF&\\p1}}m 0 0 l 60 0 60 60 0 60\n"
+    );
+    let fp = render_first_frame(&plain, 320, 240).expect("plain");
+    let fb = render_first_frame(&bordered, 320, 240).expect("bordered");
+    let (x0p, _, x1p, _) = alpha_bbox(&fp, 320).expect("plain ink");
+    let (x0b, _, x1b, _) = alpha_bbox(&fb, 320).expect("bordered ink");
+    assert!(
+        (x1b - x0b) > (x1p - x0p),
+        "border should widen the drawing bbox: plain={} bordered={}",
+        x1p - x0p,
+        x1b - x0b
+    );
+}

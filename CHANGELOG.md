@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AnimatedRenderedDecoder` now rasterises `\p` drawing-mode blocks as
+  filled vector shapes instead of treating them as glyph text. When a
+  cue's resolved `RenderState::drawing_scale` is `Some(N)` with
+  `N >= 1`, the renderer feeds the cue's text run through
+  `parse_drawing` (with the `\p<N>` `2^(N-1)` scale exponent),
+  auto-closes each subpath the way an ASS fill does — the override-tag
+  reference says "when you close the line formed, it fills it with the
+  primary color", and a new `m` / end-of-run implicitly closes the
+  prior shape — then paints three congruent copies under the same
+  animation `Group` the glyph path uses: a `\4c` / `\shad` drop
+  shadow (drawn first), a `\3c` / `\bord` outline ring (filled **and**
+  stroked at twice the width so a translucent interior shows the ring
+  colour), and the `\1c` / `\1a` primary fill on top, exactly per the
+  reference's "drawing commands use the primary color for fill and
+  outline color for borders. They also display shadow." The drawing is
+  anchored at the `\move` / `\pos` point (or the cue's static
+  `\pos(x,y)`, falling back to the alignment-derived margin anchor for
+  a bare `{\p1}m …`), and the `\pbo<y>` baseline offset is baked into
+  the path's Y coordinates (positive = down). The `\fad` / `\fade`
+  opacity, `\frz` / `\frx` / `\fry` rotation, `\fscx` / `\fscy` scale,
+  `\fax` / `\fay` shear, `\clip` / `\iclip` precedence chain, and
+  `\blur` / `\be` edge-softening post-steps all compose over a drawing
+  identically to glyph text. New `close_subpaths` / `translate_path`
+  helpers back the path assembly; 7 integration tests cover a filled
+  square, solid-fill density, the `\pbo` Y-shift, the `\p2` half-scale
+  rule, a `\p0`-disabled cue staying on the glyph path, `\clip`
+  masking the shape, and a `\bord` ring widening the bounding box.
 - `AnimatedRenderedDecoder` now bakes the typed `\bord<width>` /
   `\xbord<width>` / `\ybord<width>` border into the rasterised RGBA
   output. Per the override-tag reference, `\bord<size>` "changes the

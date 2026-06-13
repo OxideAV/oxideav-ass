@@ -221,6 +221,21 @@ impl AnimatedRenderedDecoder {
             return wrap_buf(buf, self.width, cue.start_us);
         }
 
+        // Drawing mode (`\p<scale>`). When the resolved drawing-mode
+        // toggle is on (`Some(N)` with `N >= 1`), the cue's text run is
+        // not glyphs — it is the `m`/`n`/`l`/`b`/`s`/`p`/`c` drawing
+        // mini-language described by the Aegisub override-tag reference.
+        // Per that reference, "drawing commands use the primary color
+        // for fill and outline color for borders. They also display
+        // shadow." We parse the run into a vector path and rasterise it
+        // as a filled shape rather than shaping it as text. Everything
+        // else (the `\fad` / `\move` / `\frz` / `\clip` envelope on the
+        // outer `Group`) composes exactly as it does for the glyph path,
+        // so an animated drawing block honours the same transforms.
+        if matches!(state.drawing_scale, Some(n) if n >= 1) {
+            return self.render_drawing_animated(cue, state, &text, align, vrow);
+        }
+
         // Lay out one or more visual lines (split on \n; greedy wrap by
         // shaped width).
         let face = &self.face;
@@ -631,6 +646,262 @@ impl AnimatedRenderedDecoder {
 
         wrap_buf(buf, self.width, cue.start_us)
     }
+
+    /// Rasterise a `\p<scale>` drawing block.
+    ///
+    /// Called from [`Self::render_cue_animated`] when the resolved
+    /// [`RenderState::drawing_scale`] is `Some(N)` with `N >= 1`. The
+    /// cue's flattened text run (`text`) is the drawing mini-language
+    /// (`m`/`n`/`l`/`b`/`s`/`p`/`c`), already collapsed across the
+    /// cue's segments. We feed it through [`drawing::parse_drawing`]
+    /// with the `\p` scale exponent (so `\p2` halves coordinates per
+    /// the `2^(N-1)` rule), translate it by the `\pbo` baseline offset,
+    /// and build three painted copies — shadow (`\4c`), border (`\3c`),
+    /// fill (`\1c`) — under the same animation `Group` (transform /
+    /// opacity / clip) the glyph path uses, so a `\t`-animated drawing
+    /// honours the identical envelope. Per the Aegisub override-tag
+    /// reference: "drawing commands use the primary color for fill and
+    /// outline color for borders. They also display shadow."
+    #[allow(clippy::too_many_arguments)]
+    fn render_drawing_animated(
+        &self,
+        cue: &SubtitleCue,
+        state: &RenderState,
+        text: &str,
+        align: TextAlign,
+        vrow: VerticalRow,
+    ) -> VideoFrame {
+        let mut buf = vec![0u8; (self.width as usize) * (self.height as usize) * 4];
+
+        // Parse the drawing run. The `\p<scale>` exponent maps directly
+        // onto `parse_drawing`'s `scale_exp` argument (it divides by
+        // `2^(scale-1)`); `Some(1)` → native coordinates.
+        let scale_exp = state.drawing_scale.unwrap_or(1).max(1) as u32;
+        let mut path = drawing::parse_drawing(text, scale_exp);
+        if path.commands.is_empty() {
+            return wrap_buf(buf, self.width, cue.start_us);
+        }
+
+        // `\pbo<y>` baseline offset: a Y shift applied to every drawing
+        // coordinate (positive = down). Glyph text ignores it; only the
+        // drawing path picks it up, per the reference. Bake it straight
+        // into the parsed path so the shadow / border / fill copies all
+        // share the shifted geometry.
+        let pbo = state.drawing_baseline_offset.unwrap_or(0) as f32;
+        if pbo != 0.0 {
+            path = translate_path(&path, 0.0, pbo);
+        }
+
+        // Anchor the drawing. Drawing coordinates are in script
+        // resolution; the cursor's origin is the line's position. We
+        // anchor at, in precedence order: the `\move` / `\pos`-derived
+        // animation translate (`state.translate`, which carries the
+        // sampled `\move` position), then the static `\pos(x,y)` the
+        // base parser lifted into `cue.positioning`, then the
+        // alignment-derived margin anchor the glyph path uses — so a
+        // bare `{\p1}m …` drawing lands inside the canvas margins
+        // instead of pinned to (0, 0). The reference treats `\pos` as
+        // the cursor origin for the run. The anchor also doubles as the
+        // rotation / shear pivot.
+        let pos_anchor = cue.positioning.as_ref().and_then(|p| match (p.x, p.y) {
+            (Some(x), Some(y)) => Some((x, y)),
+            _ => None,
+        });
+        let (origin_x, origin_y) = match (state.translate, pos_anchor) {
+            (Some((tx, ty)), _) => (tx, ty),
+            (None, Some((px, py))) => (px, py),
+            (None, None) => self.drawing_anchor(align, vrow),
+        };
+        // ASS fills auto-close each subpath: the reference says "when
+        // you close the line formed, it fills it with the primary
+        // color", and a fresh `m` (or end-of-run) implicitly closes the
+        // previous shape. The rasteriser only fills closed contours, so
+        // we insert a `Close` before every interior `MoveTo` and at the
+        // end of the path. The `\clip(drawing)` masks deliberately leave
+        // their paths un-closed for the inverse-winding trick, so we
+        // only do this on the visible fill/border/shadow path here.
+        let path = close_subpaths(&path);
+        let placed = translate_path(&path, origin_x, origin_y);
+
+        // Fill colour (`\1c` primary). Same `255 - ass_a` wire-alpha
+        // mapping the glyph fill uses; the cue-level `\fad` envelope
+        // stays on the outer group opacity.
+        let fill_rgba = {
+            let (r, g, b) = state.primary_color.unwrap_or((
+                self.default_color[0],
+                self.default_color[1],
+                self.default_color[2],
+            ));
+            let a = match state.primary_alpha {
+                Some(ass_a) => 255u8.saturating_sub(ass_a),
+                None => {
+                    if state.primary_color.is_some() {
+                        255
+                    } else {
+                        self.default_color[3]
+                    }
+                }
+            };
+            CoreRgba::new(r, g, b, a)
+        };
+
+        // Border ring (`\3c` outline colour, `\bord` width). A drawing
+        // shape is filled and bordered just like glyph text; we stroke
+        // the same path so the outline rides the shape edge. The width
+        // is the per-axis-max border in canvas pixels (the placed path
+        // is already in canvas units, so no per-glyph scale division is
+        // needed here).
+        let border: Option<Stroke> = match state.border {
+            Some((xb, yb)) if xb.max(yb) > 0.0 => {
+                let (br, bg, bb) = state.outline_color.unwrap_or((0, 0, 0));
+                let ba = match state.outline_alpha {
+                    Some(ass_a) => 255u8.saturating_sub(ass_a),
+                    None => 255,
+                };
+                // The stroke is centred on the edge, so a width of
+                // `2 * bord` leaves a `bord`-pixel ring outside once the
+                // fill covers the inner half — matching the glyph path.
+                Some(border_stroke(
+                    2.0 * xb.max(yb),
+                    Paint::Solid(CoreRgba::new(br, bg, bb, ba)),
+                ))
+            }
+            _ => None,
+        };
+
+        // Shadow (`\4c` colour, `\shad` / `\xshad` / `\yshad` offset),
+        // drawn first so the fill lands on top.
+        let shadow: Option<(f32, f32, CoreRgba)> = match state.shadow {
+            Some((xs, ys)) if xs != 0.0 || ys != 0.0 => {
+                let (sr, sg, sb) = state.shadow_color.unwrap_or((0, 0, 0));
+                let sa = match state.shadow_alpha {
+                    Some(ass_a) => 255u8.saturating_sub(ass_a),
+                    None => 255,
+                };
+                Some((xs, ys, CoreRgba::new(sr, sg, sb, sa)))
+            }
+            _ => None,
+        };
+
+        let mut inner = Group::default();
+        if let Some((xs, ys, scol)) = shadow {
+            let shadow_path = translate_path(&placed, xs, ys);
+            let mut node = PathNode::new(shadow_path).with_fill(Paint::Solid(scol));
+            // When a border is active the shadow is cast by the bordered
+            // silhouette, mirroring the glyph path's "shadow carries the
+            // same stroke" rule.
+            if border.is_some() {
+                let s = border_stroke(
+                    match &border {
+                        Some(b) => b.width,
+                        None => 0.0,
+                    },
+                    Paint::Solid(scol),
+                );
+                node = node.with_stroke(s);
+            }
+            inner.children.push(Node::Path(node));
+        }
+        if let Some(stroke) = border.clone() {
+            // Border pass: fill *and* stroke in the outline colour, under
+            // the primary fill, so a translucent `\1a` shows the border
+            // colour through the interior instead of a hole.
+            let bpaint = match &stroke.paint {
+                Paint::Solid(c) => Paint::Solid(*c),
+                other => other.clone(),
+            };
+            let node = PathNode::new(placed.clone())
+                .with_fill(bpaint)
+                .with_stroke(stroke);
+            inner.children.push(Node::Path(node));
+        }
+        inner.children.push(Node::Path(
+            PathNode::new(placed.clone()).with_fill(Paint::Solid(fill_rgba)),
+        ));
+
+        // Compose the animation envelope identically to the glyph path:
+        // pivot / anchor on the drawing origin, then the same clip
+        // precedence chain.
+        let anchor = (origin_x, origin_y);
+        let pivot = state.pivot.unwrap_or(anchor);
+        let anim_xf = animation_transform(state, pivot, anchor);
+
+        let canvas_w = self.width as f32;
+        let canvas_h = self.height as f32;
+        let clip_path = if let Some(s) = state.clip_drawing.as_ref() {
+            let (scale, body) = drawing::split_clip_arg(s);
+            Some(drawing::parse_drawing(body, scale))
+        } else if let Some(r) = state.clip_rect.as_ref() {
+            Some(rect_to_path(r))
+        } else if let Some(s) = state.iclip_drawing.as_ref() {
+            let (scale, body) = drawing::split_clip_arg(s);
+            let inner_clip = drawing::parse_drawing(body, scale);
+            Some(inverse_path_from_inner(canvas_w, canvas_h, &inner_clip))
+        } else {
+            state
+                .iclip_rect
+                .as_ref()
+                .map(|r| inverse_rect_path(canvas_w, canvas_h, r))
+        };
+
+        let group = Group {
+            transform: anim_xf,
+            opacity: state.alpha_mul.clamp(0.0, 1.0),
+            clip: clip_path,
+            children: vec![Node::Group(inner)],
+            ..Group::default()
+        };
+        let frame = VectorFrame {
+            width: self.width as f32,
+            height: self.height as f32,
+            view_box: None,
+            root: Group {
+                children: vec![Node::Group(group)],
+                ..Group::default()
+            },
+            pts: None,
+            time_base: TimeBase::new(1, 1),
+        };
+        let renderer = oxideav_raster::Renderer::new(self.width, self.height);
+        let rendered = renderer.render(&frame);
+        if let Some(plane) = rendered.planes.first() {
+            let n = (self.width as usize) * (self.height as usize) * 4;
+            let want = n.min(plane.data.len()).min(buf.len());
+            buf[..want].copy_from_slice(&plane.data[..want]);
+        }
+
+        // The same blur post-steps apply: a drawing shape softens its
+        // edges through `\blur` / `\be` exactly like glyph text.
+        if state.blur_sigma > 0.0 {
+            apply_blur_post(&mut buf, self.width, self.height, state.blur_sigma);
+        }
+        if state.be_strength > 0 {
+            apply_be_post(&mut buf, self.width, self.height, state.be_strength);
+        }
+
+        wrap_buf(buf, self.width, cue.start_us)
+    }
+
+    /// Fallback anchor for a `\p` drawing block with no `\pos` / `\move`
+    /// point. Mirrors the glyph path's margin-based placement: the X is
+    /// the left/centre/right margin column, the Y is the top / middle /
+    /// bottom row, so a bare `{\p1}` drawing sits inside the canvas
+    /// margins rather than pinned to the script origin.
+    fn drawing_anchor(&self, align: TextAlign, vrow: VerticalRow) -> (f32, f32) {
+        let x = match align {
+            TextAlign::Left | TextAlign::Start => self.side_margin_px as f32,
+            TextAlign::Right | TextAlign::End => {
+                (self.width as f32 - self.side_margin_px as f32).max(0.0)
+            }
+            TextAlign::Center => self.width as f32 / 2.0,
+        };
+        let y = match vrow {
+            VerticalRow::Bottom => (self.height as f32 - self.bottom_margin_px as f32).max(0.0),
+            VerticalRow::Top => self.bottom_margin_px as f32,
+            VerticalRow::Middle => self.height as f32 / 2.0,
+        };
+        (x, y)
+    }
 }
 
 /// Run `oxideav-image-filter`'s separable Gaussian blur over the
@@ -811,6 +1082,84 @@ fn rect_to_path(r: &ClipRect) -> Path {
     p.line_to(Point::new(r.x1, r.y2));
     p.close();
     p
+}
+
+/// Insert a `Close` before every interior `MoveTo` and at the end of
+/// the path, so each subpath of an ASS drawing is a closed contour the
+/// rasteriser will fill. Existing `Close` markers are preserved (and a
+/// duplicate is not added when a subpath already ends in one). Mirrors
+/// the ASS fill rule "a new `m` auto-closes the previous shape".
+fn close_subpaths(path: &Path) -> Path {
+    use oxideav_core::PathCommand;
+    let mut out: Vec<PathCommand> = Vec::with_capacity(path.commands.len() + 2);
+    let mut open = false;
+    for cmd in &path.commands {
+        match cmd {
+            PathCommand::MoveTo(_) => {
+                if open {
+                    out.push(PathCommand::Close);
+                }
+                out.push(*cmd);
+                open = true;
+            }
+            PathCommand::Close => {
+                out.push(PathCommand::Close);
+                open = false;
+            }
+            other => out.push(*other),
+        }
+    }
+    if open {
+        out.push(PathCommand::Close);
+    }
+    Path { commands: out }
+}
+
+/// Return a copy of `path` with every coordinate shifted by `(dx, dy)`.
+/// Used by the `\p` drawing-mode renderer to place the parsed drawing
+/// (whose coordinates are origin-relative) at the cue's anchor point and
+/// to offset the shadow copy — keeping the geometry identical so the
+/// shadow / border / fill copies stay congruent.
+fn translate_path(path: &Path, dx: f32, dy: f32) -> Path {
+    use oxideav_core::PathCommand;
+    let t = |p: &Point| Point::new(p.x + dx, p.y + dy);
+    let commands = path
+        .commands
+        .iter()
+        .map(|c| match c {
+            PathCommand::MoveTo(p) => PathCommand::MoveTo(t(p)),
+            PathCommand::LineTo(p) => PathCommand::LineTo(t(p)),
+            PathCommand::QuadCurveTo { control, end } => PathCommand::QuadCurveTo {
+                control: t(control),
+                end: t(end),
+            },
+            PathCommand::CubicCurveTo { c1, c2, end } => PathCommand::CubicCurveTo {
+                c1: t(c1),
+                c2: t(c2),
+                end: t(end),
+            },
+            PathCommand::ArcTo {
+                rx,
+                ry,
+                x_axis_rot,
+                large_arc,
+                sweep,
+                end,
+            } => PathCommand::ArcTo {
+                rx: *rx,
+                ry: *ry,
+                x_axis_rot: *x_axis_rot,
+                large_arc: *large_arc,
+                sweep: *sweep,
+                end: t(end),
+            },
+            PathCommand::Close => PathCommand::Close,
+            // `PathCommand` is `#[non_exhaustive]`; any future variant
+            // we don't translate is passed through unchanged.
+            other => *other,
+        })
+        .collect();
+    Path { commands }
 }
 
 /// Outer-ring extents used by the inverse-clip builders.

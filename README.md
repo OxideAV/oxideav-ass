@@ -280,6 +280,32 @@ What the parser understands and preserves on round-trip:
   same stroke repainted in the shadow colour, so the shadow is
   cast by the *bordered* silhouette (the spec notes `\shad` "works
   similar to \bord"). Opt out via `default-features = false`.
+- **`\p` drawing-mode rasterisation** (`render` cargo feature) — a
+  cue whose resolved `RenderState::drawing_scale` is `Some(N)` with
+  `N >= 1` is no longer shaped as glyphs: the
+  `AnimatedRenderedDecoder` parses its text run through
+  `parse_drawing` (with the `\p<N>` `2^(N-1)` scale exponent),
+  auto-closes each subpath the way an ASS fill does ("when you close
+  the line formed, it fills it with the primary color"), and
+  rasterises it as a filled vector shape. Per the Aegisub
+  override-tag reference, "drawing commands use the primary color for
+  fill and outline color for borders. They also display shadow" — so
+  the fill comes from `\1c` (`\1a` alpha on the usual `255 - ass_a`
+  wire mapping), the border ring from `\3c` / `\bord` (stroked at
+  twice the width and filled so a translucent interior shows the ring
+  colour), and the drop shadow from `\4c` / `\shad` (drawn first,
+  carrying the bordered stroke when `\bord` is active). The drawing
+  is anchored at the `\move` / `\pos` point (or the cue's static
+  `\pos(x,y)` from `positioning`, falling back to the alignment-
+  derived margin anchor for a bare `{\p1}m …`), and the `\pbo<y>`
+  baseline offset is baked straight into the path Y coordinates
+  (positive = down). The whole drawing rides the *same* animation
+  `Group` the glyph path uses — `\fad` / `\fade` opacity, `\frz` /
+  `\frx` / `\fry` rotation, `\fscx` / `\fscy` scale, `\fax` / `\fay`
+  shear, and the `\clip` / `\iclip` precedence chain all compose over
+  a drawing exactly as over text, and `\blur` / `\be` soften its
+  edges through the same post-steps. Opt out via
+  `default-features = false`.
 - `\N` hard line break, `\h` hard space, `\n` soft break.
 - ASS timestamp format `H:MM:SS.cc` (centiseconds).
 - Commas inside the `Text` field are preserved (the CSV splitter stops
@@ -464,18 +490,17 @@ Out of scope for this crate:
   <90° so the visual difference is small; consumers needing strict
   3D should bake their own perspective transform onto
   `RenderState::rotate_x_radians` / `rotate_y_radians`.
-- Free-form `\p` drawing-mode rendering (the rasterisation of
-  drawing blocks as decorative shapes) is parser-only — use
-  `parse_drawing` to lift the path into your own scene. The
-  `\p<scale>` toggle itself does surface on
-  `RenderState::drawing_scale` so renderers know when to treat a
-  text run as drawing commands (`Some(0)` = explicitly text mode;
-  `Some(N)` for `N >= 1` = drawing mode with sub-pixel scale exponent
-  `N - 1`, matching the `scale_exp` arg `parse_drawing` already
-  accepts), and the baseline-offset companion tag `\pbo<y>` surfaces
-  on `RenderState::drawing_baseline_offset`; renderers should
-  translate their parsed path by
-  `(0, drawing_baseline_offset.unwrap_or(0))` before rasterising.
+- Mixed text-and-drawing in a *single* cue (`{\p1}…{\p0}TEXT`) is
+  resolved against the cue-wide `RenderState` rather than per
+  segment: the renderer picks the drawing-fill path or the glyph
+  path from the cue's *final* `\p` toggle, so a cue that flips back
+  to text mode mid-line will shape its leftover drawing tokens as
+  glyphs. Author each drawing block as its own cue (the dominant
+  real-world layout) for clean output. Per-segment mode tracking is
+  a future refinement.
+- 3D `\frx` / `\fry` rotations on a drawing block share the glyph
+  path's small-angle 2D-affine approximation rather than a full
+  perspective camera (same caveat as text below).
 
 ### Codec / container IDs
 
