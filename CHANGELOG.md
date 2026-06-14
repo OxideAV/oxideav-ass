@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9](https://github.com/OxideAV/oxideav-ass/compare/v0.0.8...v0.0.9) - 2026-06-14
+
+### Other
+
+- typed accessor for the per-style Encoding column (Field 18)
+- typed accessors for ScaleX/ScaleY/Spacing/Angle style columns
+- bake \u underline / \s strikeout decoration bars into rasterised RGBA
+- rasterise \p drawing-mode blocks as filled vector shapes
+- bake \bord / \xbord / \ybord border ring into rasterised RGBA
+- typed BorderStyle style-column accessor (1=outline+shadow, 3=opaque box)
+- typed accessor for the per-event Dialogue Name column
+- typed accessor for the Dialogue Layer column
+- typed accessor for per-event MarginL/R/V columns
+- drop release-plz.toml — use release-plz defaults across the workspace
+- typed accessor for the Dialogue `Effect:` column
+- bake \shad / \xshad / \yshad drop-shadow into rasterised RGBA
+- typed [Fonts] / [Graphics] accessor with SSA-Appendix-B decode
+- bake \fsp letter-spacing into the per-glyph X translation
+- rephrase "matches the Aegisub spec note" → neutral spec citation
+- bake \iclip(rect) and \iclip(drawing) into the rasterised clip
+- bake \be iterative box-blur into the rasterised RGBA post-step
+- bake \blur Gaussian edge-blur into the rasterised RGBA post-step
+- bake the typed \1a primary-fill alpha into the rasterised fill
+- bake the typed \an numpad alignment into the renderer
+- bake \fax / \fay shear into the per-cue affine
+
 ### Added
 
 - Typed accessor for the per-style `Encoding` column (Field 18) of a
