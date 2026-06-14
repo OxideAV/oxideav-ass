@@ -31,6 +31,7 @@ pub mod event_effect;
 #[cfg(feature = "render")]
 pub mod render;
 pub mod style_border;
+pub mod style_transform;
 pub mod transform;
 
 pub use animate::{
@@ -46,6 +47,10 @@ pub use event_effect::{parse_effect_field, BannerDirection, EventEffect};
 #[cfg(feature = "render")]
 pub use render::{make_animated_decoder, AnimatedRenderedDecoder};
 pub use style_border::{parse_border_style_field, BorderStyle};
+pub use style_transform::{
+    parse_angle_field, parse_scale_field, parse_spacing_field, parse_style_transform,
+    StyleTransform,
+};
 
 use oxideav_core::ContainerRegistry;
 use oxideav_core::RuntimeContext;

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed accessors for the per-style `ScaleX` / `ScaleY` / `Spacing` /
+  `Angle` geometry columns of a `[V4+ Styles]` `Style:` line, which the
+  base `parse` reads past (the shared `SubtitleStyle` IR has no slot for
+  them). `parse_scale_field`, `parse_spacing_field`, and
+  `parse_angle_field` resolve a single column to an `f64`;
+  `parse_style_transform` lifts all four at once into a `StyleTransform`
+  struct (`scale_x` / `scale_y` / `spacing` / `angle`, plus an
+  `is_identity()` helper and an identity `Default`). These are the
+  style-level baselines for the `\fscx` / `\fscy` / `\fsp` / `\frz`
+  override tags already surfaced through the `animate` module. The
+  parsers are total — empty, whitespace, non-numeric, and non-finite
+  columns fall back per-axis to the neutral value (`100` scale, `0`
+  spacing, `0` angle); every resolved field is finite. Fractional,
+  signed, leading-`+`, and leading-zero magnitudes are accepted.
 - `AnimatedRenderedDecoder` now bakes the `\u` underline and `\s`
   strikeout text decorations into the rasterised RGBA output. Both are
   drawn as a filled horizontal bar spanning each visual line's shaped

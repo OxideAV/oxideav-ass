@@ -494,6 +494,34 @@ What the parser understands and preserves on round-trip:
   the collapse cases, non-numeric + overflow rejection, both accessors
   on both variants, the `Default` impl, `Copy + Eq` ergonomics, and an
   invariant that `as_code` only ever emits a valid spec integer.
+- **Typed per-style geometry accessor (`ScaleX` / `ScaleY` / `Spacing` /
+  `Angle`)** — the `[V4+ Styles]` `Format:` row reserves four columns for
+  the per-style font transform per the SSA v4.x / ASS spec: `ScaleX`
+  ("modifies the width of the font [percent]"), `ScaleY` ("modifies the
+  height of the font [percent]"), `Spacing` ("extra space between
+  characters [pixels]"), and `Angle` (baseline rotation, "the origin of
+  the rotation is defined by the alignment", floating point, degrees).
+  The base `parse` reads past all four — the shared `SubtitleStyle` IR has
+  no slot for them. These are the *style-level* counterparts of override
+  tags already surfaced through the `animate` module: `ScaleX` / `ScaleY`
+  mirror `\fscx` / `\fscy`, `Spacing` mirrors `\fsp`, and `Angle` mirrors
+  `\frz`; the per-segment override wins when present, the style column
+  supplies the per-line baseline. `oxideav_ass::parse_scale_field`,
+  `parse_spacing_field`, and `parse_angle_field` resolve a single column
+  to an `f64`, and `parse_style_transform(sx, sy, sp, an) -> StyleTransform`
+  lifts all four at once into a `Copy` struct with `scale_x` / `scale_y`
+  / `spacing` / `angle` fields plus an `is_identity()` helper. The
+  `Default` is the identity transform (`100` / `100` / `0` / `0`). The
+  spec gives units but pins no explicit default for a missing column, so
+  each parser falls back independently to its neutral value (no scaling /
+  no spacing / no rotation) — a malformed column resets only its own axis.
+  Parsers are total: empty, whitespace, non-numeric, and non-finite
+  (`NaN` / `inf` / overflow) columns all collapse to the identity value,
+  and every resolved field is guaranteed finite. Fractional, signed
+  (negative spacing / angle), leading-`+`, and leading-zero magnitudes
+  are accepted. 20 unit tests cover plain / fractional / signed values,
+  the per-axis fall-back, finiteness guarantees, overflow rejection, the
+  `is_identity` helper, the `Default` impl, and `Copy`/`Clone` ergonomics.
 
 Out of scope for this crate:
 
