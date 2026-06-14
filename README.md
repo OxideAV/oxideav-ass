@@ -522,6 +522,32 @@ What the parser understands and preserves on round-trip:
   are accepted. 20 unit tests cover plain / fractional / signed values,
   the per-axis fall-back, finiteness guarantees, overflow rejection, the
   `is_identity` helper, the `Default` impl, and `Copy`/`Clone` ergonomics.
+- **Typed per-style `Encoding` accessor** — the `[V4+ Styles]` /
+  `[V4 Styles]` `Format:` row reserves a column (Field 18) for the
+  per-style font character set per the SSA v4.x / ASS spec
+  (*"specifies the font character set or encoding… It is usually 0
+  (zero) for English (Western, ANSI) Windows"*). The base `parse` reads
+  past it — the shared `SubtitleStyle` IR has no slot for the per-style
+  charset. This is the *style-level* counterpart of the per-segment
+  `\fe<id>` override already surfaced through the `animate` module: both
+  carry a Windows charset numeric ID that selects the glyph-mapping
+  table, and the per-segment override wins when present.
+  `oxideav_ass::parse_encoding_field(field) -> StyleEncoding` lifts the
+  column into a `Copy + Eq` struct carrying `charset: u8` (the Win32
+  charset ID), with `as_code()` (round-trips the raw ID back into the
+  column), `is_ansi()` (branch on the dominant `0` case), and
+  `charset_name()` returning the documented common slot name (`0` ANSI /
+  `1` Default / `2` Symbol / `128` Shift-JIS / `134` GB2312 / `136`
+  BIG5 / `162` Turkish / `163` Vietnamese / `177` Hebrew / `178`
+  Arabic) or `None` for any other legal ID. The `Default` is ANSI (`0`).
+  The parser is total — empty / whitespace / non-numeric / out-of-
+  `0..=255`-range columns all collapse to ANSI, the spec's "usually 0"
+  default, mirroring how the SSA reference treats an unset value. 16
+  unit tests cover the ANSI default, the named common slots, the
+  out-of-range / non-numeric / overflow collapse, leading-`+` /
+  leading-zero magnitudes, whitespace trimming, both accessors on the
+  named + unnamed slots, the `from_charset` constructor, the `Default`
+  impl, and `Copy + Eq` ergonomics.
 
 Out of scope for this crate:
 

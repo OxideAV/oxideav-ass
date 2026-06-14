@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed accessor for the per-style `Encoding` column (Field 18) of a
+  `[V4+ Styles]` / `[V4 Styles]` `Style:` line, which the base `parse`
+  reads past (the shared `SubtitleStyle` IR has no slot for the per-style
+  font character set). `parse_encoding_field` resolves the column into a
+  `StyleEncoding` carrying the Windows charset numeric ID
+  (`charset: u8`), with `as_code()`, `is_ansi()`, and a `charset_name()`
+  that names the documented common slots (`0` ANSI / `1` Default / `2`
+  Symbol / `128` Shift-JIS / `134` GB2312 / `136` BIG5 / `162` Turkish /
+  `163` Vietnamese / `177` Hebrew / `178` Arabic). The style-level
+  baseline for the per-segment `\fe<id>` override; the override wins when
+  present. The parser is total — empty / whitespace / non-numeric /
+  out-of-`0..=255`-range columns collapse to ANSI (`0`), the spec's
+  "usually 0 for English (Western, ANSI)" default. 16 unit tests.
 - Typed accessors for the per-style `ScaleX` / `ScaleY` / `Spacing` /
   `Angle` geometry columns of a `[V4+ Styles]` `Style:` line, which the
   base `parse` reads past (the shared `SubtitleStyle` IR has no slot for
