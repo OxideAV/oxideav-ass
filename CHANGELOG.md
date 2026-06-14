@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AnimatedRenderedDecoder` now bakes the `\u` underline and `\s`
+  strikeout text decorations into the rasterised RGBA output. Both are
+  drawn as a filled horizontal bar spanning each visual line's shaped
+  width in the primary fill colour (decorations inherit the text
+  colour). The spec defines only the on/off toggle, so the bar geometry
+  is derived from the font metrics already on the face: thickness
+  `max(1px, size / 18)`, the underline `descent * 0.5` below the
+  baseline, and the strikeout centred `ascent * 0.3` above the baseline
+  (through the x-height band). The bars ride the same animation group as
+  the glyphs, so the `\fad` / `\frz` / `\clip` envelope and the per-cue
+  transform compose over them as over text, and an active drop-shadow
+  casts a congruent shadow copy. A `None` override (no `\u` / `\s`)
+  resolves to "off"; the style's `Underline` / `StrikeOut` columns are
+  not yet plumbed through to the renderer.
 - `AnimatedRenderedDecoder` now rasterises `\p` drawing-mode blocks as
   filled vector shapes instead of treating them as glyph text. When a
   cue's resolved `RenderState::drawing_scale` is `Some(N)` with

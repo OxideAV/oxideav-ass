@@ -395,6 +395,44 @@ impl AnimatedRenderedDecoder {
             }
             _ => None,
         };
+        // Underline (`\u`) / strikeout (`\s`) text decorations. Per the
+        // override-tag reference, `\u1`/`\u0` switch underlining for the
+        // following text on/off and `\s1`/`\s0` do the same for a
+        // strike-through line — both are plain on/off toggles, the spec
+        // pins no line geometry beyond "underlined" / "struck out". The
+        // typed extractor resolves them into `RenderState::underline` /
+        // `RenderState::strikeout` as `Option<bool>`, where `None` means
+        // "fall back to the style flag". The style's `Underline` /
+        // `StrikeOut` columns are not plumbed through to the renderer
+        // yet (the same gap `\fsp` falls through), so a `None` resolves
+        // to "off" here; an explicit `Some(true)` draws the line.
+        //
+        // Both decorations are drawn as a filled horizontal bar spanning
+        // the visual line's shaped width in the primary fill colour
+        // (decorations inherit the text colour). The geometry is derived
+        // from the already-available font metrics — there is no separate
+        // underline-position / -thickness metric on the face, so we use
+        // the standard typographic placement:
+        //
+        //   * thickness = max(1px, size / 18) — a hairline that scales
+        //     with the font size,
+        //   * underline sits below the baseline at `descent * 0.5` (in
+        //     the upper descender region, clear of the glyph bowls but
+        //     not down at the descender floor),
+        //   * strikeout sits above the baseline at `ascent * 0.3`
+        //     (through the x-height band so it crosses lowercase bodies).
+        //
+        // The bars ride the same inner `Group` as the glyphs, so the
+        // `\fad` opacity / `\frz` rotation / `\clip` envelope and the
+        // animation transform compose over them exactly as over text.
+        // When a drop-shadow is active the decoration casts the same
+        // shadow as the glyphs (one translated, repainted copy under the
+        // bar) so an underlined bordered cue's shadow stays congruent.
+        let deco_thickness = (size_px / 18.0).max(1.0);
+        let face_descent_f = (-face.primary().descent_px(size_px)).max(0.0);
+        let face_ascent_f = face.primary().ascent_px(size_px).max(0.0);
+        let underline_on = state.underline == Some(true);
+        let strikeout_on = state.strikeout == Some(true);
         for (i, line) in visual_lines.iter().enumerate() {
             let glyphs = Shaper::shape_to_paths(face, line, size_px);
             // Per the Aegisub override-tag reference, `\fsp` inserts an
@@ -533,6 +571,44 @@ impl AnimatedRenderedDecoder {
                     ..Group::default()
                 }));
             }
+
+            // Emit the `\u` / `\s` decoration bars for this visual line.
+            // Each bar spans the line's shaped extent
+            // (`line_x .. line_x + line_w_px`) at the placement derived
+            // above; both are painted in the primary fill colour and, if
+            // a shadow is active, get a translated shadow copy first so
+            // the rasteriser draws the shadow under the bar.
+            if (underline_on || strikeout_on) && line_w_px > 0.0 {
+                let bar_x2 = line_x + line_w_px;
+                let mut push_bar = |y_top: f32| {
+                    let rect = rect_to_path(&ClipRect {
+                        x1: line_x,
+                        y1: y_top,
+                        x2: bar_x2,
+                        y2: y_top + deco_thickness,
+                    });
+                    if let Some((xshad, yshad, ref shad_paint)) = shadow_paint {
+                        let shadow_rect = translate_path(&rect, xshad, yshad);
+                        inner.children.push(Node::Path(
+                            PathNode::new(shadow_rect).with_fill(shad_paint.clone()),
+                        ));
+                    }
+                    inner
+                        .children
+                        .push(Node::Path(PathNode::new(rect).with_fill(fill.clone())));
+                };
+                if underline_on {
+                    // Just below the baseline, in the upper descender band.
+                    push_bar(baseline_y + face_descent_f * 0.5);
+                }
+                if strikeout_on {
+                    // Through the x-height band above the baseline. The
+                    // bar's *centre* sits at `ascent * 0.3` above the
+                    // baseline, so subtract half the thickness for the top.
+                    push_bar(baseline_y - face_ascent_f * 0.3 - deco_thickness * 0.5);
+                }
+            }
+
             pen_x += line_w_px;
             let _ = pen_x; // silence unused
         }

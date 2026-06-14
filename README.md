@@ -279,7 +279,24 @@ What the parser understands and preserves on round-trip:
   both `\bord` and `\shad` are active the shadow copy carries the
   same stroke repainted in the shadow colour, so the shadow is
   cast by the *bordered* silhouette (the spec notes `\shad` "works
-  similar to \bord"). Opt out via `default-features = false`.
+  similar to \bord"). The `\u<flag>` underline and `\s<flag>`
+  strikeout decorations (`RenderState::underline` /
+  `RenderState::strikeout`, both `Option<bool>`) are baked in as a
+  filled horizontal bar spanning each visual line's shaped width in
+  the primary fill colour — decorations inherit the text colour. The
+  spec pins only the on/off toggle (`\u1`/`\u0`, `\s1`/`\s0`) and no
+  line geometry, so the placement is derived from the font metrics
+  already on the face: thickness `max(1px, size / 18)`, the underline
+  bar `descent * 0.5` below the baseline (upper descender band, clear
+  of glyph bowls), and the strikeout bar centred `ascent * 0.3` above
+  the baseline (through the x-height band). The bars ride the same
+  inner group as the glyphs, so `\fad` opacity / `\frz` rotation /
+  `\clip` / the animation transform compose over them as over text,
+  and an active drop-shadow casts a congruent shadow copy of each
+  bar. A `None` (no `\u` / `\s` override) resolves to "off" — the
+  style's `Underline` / `StrikeOut` columns are not yet plumbed
+  through to the renderer (the same gap `\fsp` falls through). Opt
+  out via `default-features = false`.
 - **`\p` drawing-mode rasterisation** (`render` cargo feature) — a
   cue whose resolved `RenderState::drawing_scale` is `Some(N)` with
   `N >= 1` is no longer shaped as glyphs: the

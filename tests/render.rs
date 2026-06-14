@@ -1805,3 +1805,64 @@ fn drawing_mode_border_extends_shape() {
         x1b - x0b
     );
 }
+
+#[test]
+fn underline_adds_ink_below_the_glyph_band() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\u1` switches underlining on for the following text. The bar is
+    // drawn just below the baseline, so the underlined cue carries more
+    // ink and its bottom edge sits lower than the plain cue's.
+    let plain = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n");
+    let lined = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\u1}}SUB\n");
+    let fp = render_first_frame(&plain, 320, 120).expect("plain");
+    let fu = render_first_frame(&lined, 320, 120).expect("underlined");
+    let m_plain = alpha_mass(&fp);
+    let m_lined = alpha_mass(&fu);
+    assert!(
+        m_lined > m_plain,
+        "underline must add ink: plain={m_plain} underlined={m_lined}"
+    );
+    let (_, _, _, max_y_plain) = alpha_bbox(&fp, 320).expect("plain ink");
+    let (_, _, _, max_y_lined) = alpha_bbox(&fu, 320).expect("underlined ink");
+    assert!(
+        max_y_lined >= max_y_plain,
+        "underline bar should sit at/below the glyph band: plain_max_y={max_y_plain} underlined_max_y={max_y_lined}"
+    );
+}
+
+#[test]
+fn underline_off_matches_baseline() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\u0` is an explicit "off" — it must produce the same ink as the
+    // baseline cue with no `\u` tag at all.
+    let base = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n");
+    let off = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\u0}}SUB\n");
+    let m_base = alpha_mass(&render_first_frame(&base, 320, 120).expect("base"));
+    let m_off = alpha_mass(&render_first_frame(&off, 320, 120).expect("off"));
+    assert_eq!(m_base, m_off, "\\u0 must match the no-decoration baseline");
+}
+
+#[test]
+fn strikeout_adds_ink_through_the_glyph_band() {
+    if load_face().is_none() {
+        return;
+    }
+    // `\s1` switches strikeout on. The bar crosses the x-height band, so
+    // the struck cue carries more ink than the plain one. Its top edge
+    // stays at/above the plain cue's bottom (the bar is not below the
+    // descenders).
+    let plain = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n");
+    let struck = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\s1}}SUB\n");
+    let fp = render_first_frame(&plain, 320, 120).expect("plain");
+    let fs = render_first_frame(&struck, 320, 120).expect("struck");
+    let m_plain = alpha_mass(&fp);
+    let m_struck = alpha_mass(&fs);
+    assert!(
+        m_struck > m_plain,
+        "strikeout must add ink: plain={m_plain} struck={m_struck}"
+    );
+}
