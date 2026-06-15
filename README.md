@@ -171,7 +171,7 @@ What the parser understands and preserves on round-trip:
   (the wipe fraction for a sweep syllable; the started/not-started
   boundary for the instant kinds). The evaluator leaves `RenderState`
   untouched for karaoke — renderers walk the spans. `\kt` is not
-  modelled (undocumented per the Aegisub reference); it round-trips
+  modelled (undocumented in the spec); it round-trips
   verbatim. Note: when karaoke is recovered through the base parser's
   collapsed `Segment::Karaoke` markers the family member is reported as
   the conservative `Fill` default (the core marker keeps only the
@@ -190,8 +190,7 @@ What the parser understands and preserves on round-trip:
   rotations around `\org` / `\fax` / `\fay` shear pivoted on the
   cue's alignment point / clip path / opacity / `\an<n>` numpad
   alignment) onto a `VectorFrame` of shaped glyphs and rasterises
-  through `oxideav-raster`. The shear pre-step uses the Aegisub
-  override-tag reference's matrix `[[1, fax], [fay, 1]]` and pivots
+  through `oxideav-raster`. The shear pre-step uses the override-tag spec's matrix `[[1, fax], [fay, 1]]` and pivots
   on the alignment point rather than `\org`, per the spec's "the
   coordinate system used for shearing is not affected by the
   rotation origin" rule. The numpad-alignment override (1..9; both
@@ -200,8 +199,7 @@ What the parser understands and preserves on round-trip:
   (bottom/middle/top): bottom-row cues sit above the canvas bottom
   margin (existing behaviour), top-row cues sit below the canvas
   top margin, and middle-row cues are centred on the canvas
-  mid-line. The `\1a` primary-fill alpha override (Aegisub spec
-  convention: `0 = opaque, 255 = transparent`) is baked into the
+  mid-line. The `\1a` primary-fill alpha override (spec convention: `0 = opaque, 255 = transparent`) is baked into the
   rasterised fill colour as `final_a = 255 - ass_a`, while the
   cue-level `\fad` / `\fade` envelope stays on the animation
   `Group`'s `opacity` — the two compose multiplicatively per the
@@ -210,7 +208,7 @@ What the parser understands and preserves on round-trip:
   `\blur<strength>` Gaussian edge-blur is applied as a post-step
   on the rasterised RGBA buffer via `oxideav-image-filter::Blur`:
   the wire `strength` is treated as the Gaussian sigma (in pixels,
-  non-integer per the Aegisub spec), the separable-kernel radius
+  non-integer per the spec), the separable-kernel radius
   is picked as `ceil(3 * sigma)` (3σ cutoff captures > 99.7% of
   the kernel mass), and the blur runs through all four RGBA
   channels — so the softened glyph edges land back via alpha,
@@ -219,7 +217,7 @@ What the parser understands and preserves on round-trip:
   soften the same way). `\be`'s
   iterative box-blur strength is baked in as an N-pass 3×3 separable
   box average over the rasterised RGBA buffer (including alpha; runs
-  *after* the `\blur` Gaussian step), matching the Aegisub spec's
+  *after* the `\blur` Gaussian step), matching the spec's
   "regular effect, repeated `strength` times" definition. The two
   filters stay on independent `RenderState` channels (`blur_sigma`
   + `be_strength`) per the spec's "more advanced algorithm vs
@@ -243,8 +241,7 @@ What the parser understands and preserves on round-trip:
   `\clip(drawing)` → `\clip(rect)` → `\iclip(drawing)` →
   `\iclip(rect)`; when both a positive `\clip` and an inverse
   `\iclip` appear on the same segment the positive form wins,
-  matching the existing "last-set-wins" override model (the Aegisub
-  override-tag reference describes each form independently and does
+  matching the existing "last-set-wins" override model (the override-tag spec describes each form independently and does
   not pin a co-occurrence rule). The `\shad<depth>` /
   `\xshad<depth>` / `\yshad<depth>` drop-shadow distance is baked
   in by pushing an extra translated-and-repainted shadow node
@@ -304,8 +301,7 @@ What the parser understands and preserves on round-trip:
   `parse_drawing` (with the `\p<N>` `2^(N-1)` scale exponent),
   auto-closes each subpath the way an ASS fill does ("when you close
   the line formed, it fills it with the primary color"), and
-  rasterises it as a filled vector shape. Per the Aegisub
-  override-tag reference, "drawing commands use the primary color for
+  rasterises it as a filled vector shape. Per the override-tag spec, "drawing commands use the primary color for
   fill and outline color for borders. They also display shadow" — so
   the fill comes from `\1c` (`\1a` alpha on the usual `255 - ass_a`
   wire mapping), the border ring from `\3c` / `\bord` (stroked at
@@ -553,7 +549,7 @@ Out of scope for this crate:
 
 - (None on the blur axis — both `\blur<strength>` and `\be<strength>`
   are baked into the `AnimatedRenderedDecoder`; the two filters stay
-  on separate channels per the Aegisub spec rather than being merged
+  on separate channels per the spec rather than being merged
   into one blur term.)
 - 3D `\frx` / `\fry` rotations are reduced to a 2D affine via the
   orthographic small-angle approximation (axis-aligned `cos(α)`
