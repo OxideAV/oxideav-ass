@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Other
+
+- bake \i synthetic-italic oblique slant into rasterised RGBA glyphs
+
 ## [0.0.9](https://github.com/OxideAV/oxideav-ass/compare/v0.0.8...v0.0.9) - 2026-06-14
 
 ### Other

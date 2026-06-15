@@ -292,8 +292,24 @@ What the parser understands and preserves on round-trip:
   and an active drop-shadow casts a congruent shadow copy of each
   bar. A `None` (no `\u` / `\s` override) resolves to "off" — the
   style's `Underline` / `StrikeOut` columns are not yet plumbed
-  through to the renderer (the same gap `\fsp` falls through). Opt
-  out via `default-features = false`.
+  through to the renderer (the same gap `\fsp` falls through). The
+  `\i<flag>` italic toggle (`RenderState::italic`, `Option<bool>`)
+  is baked in as a synthetic oblique slant: the face chain carries a
+  single upright cut with no italic variant to swap in, so an
+  explicit `\i1` leans every glyph through a baseline-pivoted
+  horizontal shear — the conventional faux-italic substitution a
+  text engine applies when a true italic is unavailable. The spec
+  pins only the on/off toggle (`\i1`/`\i0`) and no slant angle, so
+  the lean is a renderer-derived `~12°` oblique (the same family of
+  metric-derived constant as the `\u` / `\s` bar geometry above),
+  applied in canvas space on top of each glyph's positioning
+  transform so it composes under the `\frz` / `\fax` / `\fad` /
+  `\clip` envelope, and the underline / strikeout bars (and the
+  drop-shadow copies) ride the same shear so they stay congruent
+  with the slanted text. `\i0` and a missing `\i` both render
+  upright — the style's `Italic` column is not yet plumbed through
+  to the renderer (the same gap `\u` / `\s` / `\fsp` fall through).
+  Opt out via `default-features = false`.
 - **`\p` drawing-mode rasterisation** (`render` cargo feature) — a
   cue whose resolved `RenderState::drawing_scale` is `Some(N)` with
   `N >= 1` is no longer shaped as glyphs: the

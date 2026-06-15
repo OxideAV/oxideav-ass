@@ -433,6 +433,26 @@ impl AnimatedRenderedDecoder {
         let face_ascent_f = face.primary().ascent_px(size_px).max(0.0);
         let underline_on = state.underline == Some(true);
         let strikeout_on = state.strikeout == Some(true);
+        // Italic (`\i1`) synthetic-oblique slant. Per the override-tag
+        // reference `\i1`/`\i0` simply "switch italics text on or off";
+        // no slant angle is pinned, and the renderer's `FaceChain`
+        // carries a single upright face with no italic variant to swap
+        // in. So an explicit `\i1` is rendered as a synthetic oblique:
+        // a baseline-pivoted horizontal shear that leans the glyph tops
+        // to the right, the same faux-italic substitution a text engine
+        // applies when a true italic cut is unavailable. The slant
+        // factor is `tan(SYNTH_ITALIC_RAD)` — a renderer-derived
+        // constant, like the `\u`/`\s` bar geometry above, since the
+        // spec supplies no number. `None` (no `\i` override) resolves
+        // to upright here; the style's `Italic` column is not plumbed
+        // through to the renderer yet (the same gap `\u`/`\s`/`\fsp`
+        // fall through).
+        let italic_on = state.italic == Some(true);
+        let italic_slant = if italic_on {
+            SYNTH_ITALIC_RAD.tan()
+        } else {
+            0.0
+        };
         for (i, line) in visual_lines.iter().enumerate() {
             let glyphs = Shaper::shape_to_paths(face, line, size_px);
             // Per the Aegisub override-tag reference, `\fsp` inserts an
@@ -514,10 +534,23 @@ impl AnimatedRenderedDecoder {
                 }
                 _ => None,
             };
+            // Synthetic-italic shear, pivoted on this line's baseline so
+            // the lean grows with height above the baseline (and below
+            // it for descenders). Composed on the *left* of each glyph's
+            // canvas-space transform so it bends the already-positioned
+            // glyph rather than the font-local path.
+            let italic_xf = if italic_on {
+                Some(italic_shear(italic_slant, baseline_y))
+            } else {
+                None
+            };
             for (gi, (_face_idx, node, glyph_xform)) in glyphs.into_iter().enumerate() {
                 let fsp_shift = (gi as f32) * fsp;
-                let absolute =
+                let mut absolute =
                     Transform2D::translate(pen_x + fsp_shift, baseline_y).compose(&glyph_xform);
+                if let Some(ref it) = italic_xf {
+                    absolute = it.compose(&absolute);
+                }
                 // Stroke widths are interpreted by the rasteriser in
                 // path-local units and the glyph paths live in font
                 // units under `glyph_xform`'s scale — convert the
@@ -526,9 +559,12 @@ impl AnimatedRenderedDecoder {
                 // pixel width.
                 let local_scale = transform_scale(&glyph_xform);
                 if let Some((xshad, yshad, ref shad_paint)) = shadow_paint {
-                    let shadow_absolute =
+                    let mut shadow_absolute =
                         Transform2D::translate(pen_x + fsp_shift + xshad, baseline_y + yshad)
                             .compose(&glyph_xform);
+                    if let Some(ref it) = italic_xf {
+                        shadow_absolute = it.compose(&shadow_absolute);
+                    }
                     // When a border is active the shadow is cast by
                     // the *bordered* silhouette — the spec describes
                     // `\shad` as the distance between the character
@@ -587,15 +623,25 @@ impl AnimatedRenderedDecoder {
                         x2: bar_x2,
                         y2: y_top + deco_thickness,
                     });
+                    // Lean the decoration bars with the synthetic-italic
+                    // shear so an italic underline / strikeout stays
+                    // congruent with the slanted glyphs above it.
+                    let push_node = |inner: &mut Group, path: Path, paint: Paint| {
+                        let node = Node::Path(PathNode::new(path).with_fill(paint));
+                        match italic_xf {
+                            Some(ref it) => inner.children.push(Node::Group(Group {
+                                transform: *it,
+                                children: vec![node],
+                                ..Group::default()
+                            })),
+                            None => inner.children.push(node),
+                        }
+                    };
                     if let Some((xshad, yshad, ref shad_paint)) = shadow_paint {
                         let shadow_rect = translate_path(&rect, xshad, yshad);
-                        inner.children.push(Node::Path(
-                            PathNode::new(shadow_rect).with_fill(shad_paint.clone()),
-                        ));
+                        push_node(&mut inner, shadow_rect, shad_paint.clone());
                     }
-                    inner
-                        .children
-                        .push(Node::Path(PathNode::new(rect).with_fill(fill.clone())));
+                    push_node(&mut inner, rect, fill.clone());
                 };
                 if underline_on {
                     // Just below the baseline, in the upper descender band.
@@ -1683,6 +1729,43 @@ fn animation_transform(state: &RenderState, pivot: (f32, f32), anchor: (f32, f32
 /// `c = fax`, `d = 1`, `e = f = 0`. The matrix is centred at the
 /// origin; the caller wraps it in the anchor translate pair to put
 /// the shear's pivot at the cue's alignment point.
+/// Synthetic-oblique italic angle, in radians.
+///
+/// `\i1` only asks for "italics on"; the override-tag reference pins no
+/// slant angle, and the renderer's single upright face has no true
+/// italic cut to substitute. So italic is faked as an oblique slant of
+/// this angle — `~12°`, the conventional faux-italic lean a text engine
+/// applies when no italic variant is available. This is a renderer-
+/// derived constant in the same family as the `\u`/`\s` bar geometry,
+/// not a spec-supplied number.
+const SYNTH_ITALIC_RAD: f32 = 0.209_44; // 12° in radians.
+
+/// Build a baseline-pivoted horizontal-shear matrix for synthetic
+/// italic. `slant` is `tan(angle)`; `baseline_y` is the canvas-space Y
+/// of the line's baseline. Points above the baseline (smaller screen-Y)
+/// shift to the right, leaning the glyph tops forward:
+///
+/// ```text
+/// x' = x + slant * (baseline_y - y) = x - slant*y + slant*baseline_y
+/// y' = y
+/// ```
+///
+/// In the `Transform2D` `(a, b, c, d, e, f)` layout (where
+/// `apply(p) = (a*x + c*y + e, b*x + d*y + f)`): `a = 1`, `c = -slant`,
+/// `e = slant * baseline_y`, `d = 1`, `b = f = 0`. The matrix is in
+/// canvas space, so the caller composes it on the *left* of each
+/// glyph's positioning transform.
+fn italic_shear(slant: f32, baseline_y: f32) -> Transform2D {
+    Transform2D {
+        a: 1.0,
+        b: 0.0,
+        c: -slant,
+        d: 1.0,
+        e: slant * baseline_y,
+        f: 0.0,
+    }
+}
+
 fn shear_matrix(fax: f32, fay: f32) -> Transform2D {
     Transform2D {
         a: 1.0,

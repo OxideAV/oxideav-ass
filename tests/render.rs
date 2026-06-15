@@ -391,6 +391,82 @@ fn fay_shears_y_distortion_extends_bbox() {
 }
 
 #[test]
+fn italic_slants_glyphs_widening_bbox() {
+    let face_a = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let face_b = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    // `\i1` enables italics. The face has no italic cut, so the
+    // renderer fakes it as a baseline-pivoted horizontal shear that
+    // leans the glyph tops to the right. Like a pure `\fax`, that
+    // displaces only along x: the visible x-range widens (the top of
+    // the tallest glyph moves right past the upright bbox edge) while
+    // the y-extent is essentially unchanged.
+    let plain = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,LEAN\n");
+    let italic =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\i1}}LEAN\n");
+
+    let inner_a = build_decoder(&plain);
+    let mut dec_a = AnimatedRenderedDecoder::new(inner_a, 320, 200, face_a);
+    let f_a = dec_a.receive_frame().expect("plain");
+    let bbox_a = alpha_bbox(&f_a, 320).expect("ink plain");
+
+    let inner_b = build_decoder(&italic);
+    let mut dec_b = AnimatedRenderedDecoder::new(inner_b, 320, 200, face_b);
+    let f_b = dec_b.receive_frame().expect("italic");
+    let bbox_b = alpha_bbox(&f_b, 320).expect("ink italic");
+
+    let w_a = (bbox_a.2 - bbox_a.0) as i32;
+    let w_b = (bbox_b.2 - bbox_b.0) as i32;
+    assert!(
+        w_b > w_a,
+        "expected italic slant to widen the bbox: plain_w={w_a} italic_w={w_b}"
+    );
+    // A baseline-pivoted x-shear leaves the y-extent unchanged (AA slack).
+    let h_a = (bbox_a.3 - bbox_a.1) as i32;
+    let h_b = (bbox_b.3 - bbox_b.1) as i32;
+    assert!(
+        (h_a - h_b).abs() <= 3,
+        "italic should not change y-extent meaningfully: h_plain={h_a} h_italic={h_b}"
+    );
+}
+
+#[test]
+fn italic_off_leaves_glyphs_upright() {
+    // `\i0` is an explicit "italics off" — the rendered bbox must match
+    // the no-override baseline (no synthetic slant applied).
+    let face_a = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let face_b = match load_face() {
+        Some(f) => f,
+        None => return,
+    };
+    let plain = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,LEAN\n");
+    let off = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\i0}}LEAN\n");
+
+    let inner_a = build_decoder(&plain);
+    let mut dec_a = AnimatedRenderedDecoder::new(inner_a, 320, 200, face_a);
+    let bbox_a = alpha_bbox(&dec_a.receive_frame().expect("plain"), 320).expect("ink plain");
+
+    let inner_b = build_decoder(&off);
+    let mut dec_b = AnimatedRenderedDecoder::new(inner_b, 320, 200, face_b);
+    let bbox_b = alpha_bbox(&dec_b.receive_frame().expect("off"), 320).expect("ink off");
+
+    let w_a = (bbox_a.2 - bbox_a.0) as i32;
+    let w_b = (bbox_b.2 - bbox_b.0) as i32;
+    assert!(
+        (w_a - w_b).abs() <= 2,
+        "\\i0 should render upright like the baseline: plain_w={w_a} off_w={w_b}"
+    );
+}
+
+#[test]
 fn an_numpad_anchors_vertical_row() {
     // Three cues at \an2 (bottom-centre), \an5 (middle-centre), and
     // \an8 (top-centre). The rendered bbox vertical centre should
