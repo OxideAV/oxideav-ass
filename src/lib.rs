@@ -455,8 +455,17 @@ fn parse_ass_text(text: &str) -> (Vec<Segment>, Option<CuePosition>) {
                 continue;
             }
         }
-        text_buf.push(bytes[cursor] as char);
-        cursor += 1;
+        // Default: emit the next full UTF-8 scalar. `{` and `\` markers
+        // are ASCII and were handled above, so anything reaching here is
+        // literal text. ASS dialogue is UTF-8, so a multi-byte glyph
+        // (CJK, accented Latin, …) must be copied whole — casting a raw
+        // continuation byte to `char` would split it into mojibake.
+        let ch = text[cursor..]
+            .chars()
+            .next()
+            .expect("cursor is on a char boundary inside the slice");
+        text_buf.push(ch);
+        cursor += ch.len_utf8();
     }
     if !text_buf.is_empty() {
         out.push(state.wrap(Segment::Text(text_buf)));
@@ -1039,6 +1048,65 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\b1}Hello{\b0} world
             },
             other => panic!("expected bold, got {other:?}"),
         }
+    }
+
+    /// Collect every `Segment::Text` payload in document order into one
+    /// string (flattening through styling wrappers), so a test can assert
+    /// on the literal text the segmenter produced regardless of nesting.
+    fn flatten_text(segs: &[Segment]) -> String {
+        fn walk(seg: &Segment, out: &mut String) {
+            match seg {
+                Segment::Text(s) => out.push_str(s),
+                Segment::LineBreak => out.push('\n'),
+                Segment::Bold(c)
+                | Segment::Italic(c)
+                | Segment::Underline(c)
+                | Segment::Strike(c) => {
+                    for ch in c {
+                        walk(ch, out);
+                    }
+                }
+                Segment::Color { children, .. } => {
+                    for ch in children {
+                        walk(ch, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut s = String::new();
+        for seg in segs {
+            walk(seg, &mut s);
+        }
+        s
+    }
+
+    #[test]
+    fn dialogue_text_preserves_utf8() {
+        // ASS dialogue is UTF-8. A byte-at-a-time segmenter that casts a
+        // raw byte to `char` would split every multi-byte scalar into
+        // Latin-1 mojibake. CJK + accented Latin + an emoji exercise the
+        // 3-byte, 2-byte, and 4-byte UTF-8 encodings.
+        let (segs, _) = parse_ass_text("日本語 café 🎵");
+        assert_eq!(flatten_text(&segs), "日本語 café 🎵");
+    }
+
+    #[test]
+    fn dialogue_utf8_around_overrides_and_breaks() {
+        // The multi-byte glyphs must survive on both sides of an override
+        // block and a hard `\N` line break (the markers are ASCII so they
+        // never land mid-scalar).
+        let (segs, _) = parse_ass_text(r"あ{\b1}い{\b0}\Nう");
+        assert_eq!(flatten_text(&segs), "あい\nう");
+    }
+
+    #[test]
+    fn dialogue_utf8_after_literal_backslash() {
+        // A backslash that is not one of the `\N` / `\n` / `\h` text
+        // escapes is literal text; the following multi-byte glyph must
+        // still be copied whole rather than truncated at the marker.
+        let (segs, _) = parse_ass_text(r"x\テ");
+        assert_eq!(flatten_text(&segs), r"x\テ");
     }
 
     #[test]

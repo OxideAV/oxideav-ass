@@ -336,6 +336,13 @@ What the parser understands and preserves on round-trip:
   edges through the same post-steps. Opt out via
   `default-features = false`.
 - `\N` hard line break, `\h` hard space, `\n` soft break.
+- **UTF-8 dialogue text** — the text segmenter scans for the ASCII
+  `{` override-block and `\` escape markers byte-wise, but emits literal
+  runs one full Unicode scalar at a time, so multi-byte glyphs (CJK,
+  Latin-with-diacritics, emoji, …) survive verbatim instead of being
+  split into Latin-1 mojibake. Covered by three round-trip tests
+  exercising the 2-, 3-, and 4-byte UTF-8 encodings around override
+  blocks, `\N` breaks, and literal backslashes.
 - ASS timestamp format `H:MM:SS.cc` (centiseconds).
 - Commas inside the `Text` field are preserved (the CSV splitter stops
   at the per-format column count).

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- preserve UTF-8 dialogue text: the segmenter no longer casts raw bytes
+  to `char`, so multi-byte glyphs (CJK / accented Latin / emoji) survive
+  instead of being split into Latin-1 mojibake
+
 ### Other
 
 - bake \i synthetic-italic oblique slant into rasterised RGBA glyphs
