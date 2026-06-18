@@ -567,6 +567,33 @@ What the parser understands and preserves on round-trip:
   leading-zero magnitudes, whitespace trimming, both accessors on the
   named + unnamed slots, the `from_charset` constructor, the `Default`
   impl, and `Copy + Eq` ergonomics.
+- **Typed per-style `Alignment` accessor** — the `[V4+ Styles]` /
+  `[V4 Styles]` `Format:` row reserves a column for the on-screen anchor
+  per the SSA v4.x / ASS spec. The base `parse` decodes the column into
+  the shared `SubtitleStyle::align` IR but keeps only the *horizontal*
+  justification (left / centre / right) — `TextAlign` has no slot for
+  the *vertical* row, so the top / middle / bottom placement the column
+  also carries is dropped. `oxideav_ass::parse_alignment_field(field,
+  is_ssa) -> StyleAlignment` lifts the full numpad anchor into a typed
+  `{ horizontal: AlignH, vertical: AlignV }` pair, handling both spec
+  numbering schemes: the ASS `[V4+ Styles]` numpad code (`1..=9`, with
+  `1-3` bottom / `4-6` middle / `7-9` top — the same numbering `\an<n>`
+  uses) and the legacy SSA `[V4 Styles]` bit scheme (`1`/`2`/`3` =
+  L/C/R, `+4` = toptitle, `+8` = midtitle, so the spec's worked example
+  `5` = left-justified toptitle). The two schemes normalise to the same
+  `StyleAlignment`, so a renderer reasons about one anchor model
+  regardless of dialect. `as_numpad()` round-trips the ASS code,
+  `as_ssa()` round-trips the legacy code, and `is_bottom()` branches the
+  dominant subtitle row. The `Default` is bottom-centre (numpad `2`).
+  The parser is total — empty / whitespace / non-numeric / out-of-range
+  columns all collapse to bottom-centre, matching the base parser's
+  `unwrap_or(2)` fall-back. 20 unit tests cover the full ASS 1..=9 grid,
+  the SSA L/C/R × bottom/top/middle grid, both round-trips, the spec
+  worked example, cross-scheme anchor agreement, the malformed-column
+  collapse on both schemes, the SSA both-row-bits and centre-low-bits
+  edge cases, leading-`+` / leading-zero magnitudes, whitespace
+  trimming, the `is_bottom` accessor, the `Default` impl, and `Copy +
+  Eq` ergonomics.
 
 Out of scope for this crate:
 

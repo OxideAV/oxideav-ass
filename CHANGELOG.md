@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- typed accessor for the per-style Alignment column (ASS numpad + legacy
+  SSA `+4`/`+8` schemes), surfacing the vertical row the base parser drops
 - bake \i synthetic-italic oblique slant into rasterised RGBA glyphs
 
 ## [0.0.9](https://github.com/OxideAV/oxideav-ass/compare/v0.0.8...v0.0.9) - 2026-06-14

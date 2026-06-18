@@ -30,6 +30,7 @@ pub mod drawing;
 pub mod event_effect;
 #[cfg(feature = "render")]
 pub mod render;
+pub mod style_alignment;
 pub mod style_border;
 pub mod style_encoding;
 pub mod style_transform;
@@ -47,6 +48,7 @@ pub use drawing::parse_drawing;
 pub use event_effect::{parse_effect_field, BannerDirection, EventEffect};
 #[cfg(feature = "render")]
 pub use render::{make_animated_decoder, AnimatedRenderedDecoder};
+pub use style_alignment::{parse_alignment_field, AlignH, AlignV, StyleAlignment};
 pub use style_border::{parse_border_style_field, BorderStyle};
 pub use style_encoding::{parse_encoding_field, StyleEncoding};
 pub use style_transform::{
