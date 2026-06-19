@@ -280,6 +280,44 @@ impl Event {
             parse_margin_field(&self.margin_v),
         )
     }
+
+    /// Extract every override tag from the event's `Text` column as a
+    /// typed [`AnimatedTag`] stream, in document order.
+    ///
+    /// The `Text` field is scanned for `{...}` override blocks; the
+    /// contents of each block run through the same override-tag reader
+    /// the `animate` module uses, so the full documented tag surface is
+    /// recognised (`\pos` / `\move` / `\fad` / `\fade` / `\t` / `\clip`
+    /// / `\iclip` / the `\1c`–`\4c` colours / `\1a`–`\4a` + `\alpha`
+    /// alphas / the `\fscx` / `\fscy` / `\frx` / `\fry` / `\frz`
+    /// transforms / `\bord` / `\shad` / `\be` / `\blur` / `\fsp` /
+    /// `\fn` / `\fe` / `\b` / `\i` / `\u` / `\s` / `\k` family / `\r`,
+    /// …). Tags inside an animation wrapper are surfaced via the
+    /// `\t(...)` token alongside their inner modifiers.
+    ///
+    /// The text outside the blocks (the actual subtitle glyphs) is not
+    /// returned here — use [`Event::to_subtitle_cue`] for the styled
+    /// segment stream, or read [`Event::text`] for the verbatim source.
+    pub fn override_tags(&self) -> Vec<crate::AnimatedTag> {
+        let mut out = Vec::new();
+        let bytes = self.text.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'{' {
+                // Find the closing brace; an unterminated `{` is literal
+                // text, so stop scanning blocks past it.
+                let Some(rel) = self.text[i + 1..].find('}') else {
+                    break;
+                };
+                let end = i + 1 + rel;
+                crate::parse_overrides(&self.text[i + 1..end], &mut out);
+                i = end + 1;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
 }
 
 /// A verbatim section: header name + raw body lines.
@@ -1092,6 +1130,55 @@ Dialogue: Marked=0,0:00:01.00,0:00:02.00,Def,,0,0,0,,hi\n";
             ..ev
         };
         assert!(dlg.to_subtitle_cue().is_some());
+    }
+
+    #[test]
+    fn override_tags_extracts_full_tag_stream() {
+        use crate::AnimatedTag;
+        let ev = Event {
+            kind: EventKind::Dialogue,
+            text: "{\\pos(100,200)\\3c&H0000FF&}border {\\fad(150,150)}red".into(),
+            ..Event::default()
+        };
+        let tags = ev.override_tags();
+        // Spans both override blocks in document order.
+        assert!(tags
+            .iter()
+            .any(|t| matches!(t, AnimatedTag::Pos { x, y } if *x == 100.0 && *y == 200.0)));
+        // `&H0000FF&` is `&Hbbggrr&` → rr=FF → rgb (255, 0, 0).
+        assert!(tags
+            .iter()
+            .any(|t| matches!(t, AnimatedTag::Color3((255, 0, 0)))));
+        assert!(tags.iter().any(|t| matches!(
+            t,
+            AnimatedTag::Fad {
+                t1_ms: 150,
+                t2_ms: 150
+            }
+        )));
+    }
+
+    #[test]
+    fn override_tags_handles_unterminated_brace() {
+        let ev = Event {
+            kind: EventKind::Dialogue,
+            text: "{\\b1}ok then {unterminated".into(),
+            ..Event::default()
+        };
+        // The first block parses; the stray `{` does not panic and is
+        // treated as literal text.
+        let tags = ev.override_tags();
+        assert!(!tags.is_empty());
+    }
+
+    #[test]
+    fn override_tags_empty_when_no_blocks() {
+        let ev = Event {
+            kind: EventKind::Dialogue,
+            text: "plain text, no overrides".into(),
+            ..Event::default()
+        };
+        assert!(ev.override_tags().is_empty());
     }
 
     #[test]
