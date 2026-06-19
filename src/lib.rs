@@ -252,7 +252,7 @@ fn parse_style_line(line: &str, fmt: &[String], is_ssa: bool) -> Option<Subtitle
 }
 
 /// ASS `\an<N>`: 1=bl, 2=bc, 3=br, 4=ml, 5=mc, 6=mr, 7=tl, 8=tc, 9=tr.
-fn ass_alignment_to_textalign(n: i32) -> TextAlign {
+pub(crate) fn ass_alignment_to_textalign(n: i32) -> TextAlign {
     match n {
         1 | 4 | 7 => TextAlign::Left,
         2 | 5 | 8 => TextAlign::Center,
@@ -262,7 +262,7 @@ fn ass_alignment_to_textalign(n: i32) -> TextAlign {
 }
 
 /// SSA alignment: low nibble = L/C/R (1/2/3), high bit = top/mid/bot.
-fn ssa_alignment_to_textalign(n: i32) -> TextAlign {
+pub(crate) fn ssa_alignment_to_textalign(n: i32) -> TextAlign {
     match n & 0x03 {
         1 => TextAlign::Left,
         3 => TextAlign::Right,
@@ -270,14 +270,14 @@ fn ssa_alignment_to_textalign(n: i32) -> TextAlign {
     }
 }
 
-fn parse_bool_flag(s: &str) -> bool {
+pub(crate) fn parse_bool_flag(s: &str) -> bool {
     let v: i32 = s.parse().unwrap_or(0);
     v != 0
 }
 
 /// ASS colors: `&HAABBGGRR&` or `&HBBGGRR` (no alpha) or `&H...`.
 /// Return RGBA. Alpha in ASS is 00 = fully opaque, FF = fully transparent.
-fn parse_ass_color(s: &str) -> Option<(u8, u8, u8, u8)> {
+pub(crate) fn parse_ass_color(s: &str) -> Option<(u8, u8, u8, u8)> {
     let s = s.trim().trim_matches('&');
     let s = s.trim_start_matches(['H', 'h']);
     let s = s.trim_start_matches("0x");
@@ -361,7 +361,7 @@ fn parse_event_line(line: &str, fmt: &[String]) -> Option<SubtitleCue> {
 }
 
 /// ASS timestamp: `H:MM:SS.cc` (centiseconds) — sometimes with extra digits.
-fn parse_ass_timestamp(s: &str) -> Option<i64> {
+pub(crate) fn parse_ass_timestamp(s: &str) -> Option<i64> {
     let (hms, frac) = match s.find('.') {
         Some(i) => (&s[..i], &s[i + 1..]),
         None => (s, "0"),
@@ -411,7 +411,7 @@ fn format_ass_ts(us: i64) -> String {
 // ---------------------------------------------------------------------------
 // ASS override-tag parser
 
-fn parse_ass_text(text: &str) -> (Vec<Segment>, Option<CuePosition>) {
+pub(crate) fn parse_ass_text(text: &str) -> (Vec<Segment>, Option<CuePosition>) {
     let mut out: Vec<Segment> = Vec::new();
     let mut state = AssState::default();
     let mut positioning: Option<CuePosition> = None;

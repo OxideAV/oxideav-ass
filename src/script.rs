@@ -358,6 +358,137 @@ impl AssScript {
 }
 
 // ---------------------------------------------------------------------------
+// Bridge to the shared subtitle IR
+
+use oxideav_core::SubtitleStyle;
+use oxideav_subtitle::ir::{SourceFormat, SubtitleTrack};
+
+impl StyleDef {
+    /// Project this fully-typed style row onto the lossy shared
+    /// [`SubtitleStyle`] IR. Columns the IR cannot hold (`ScaleX` /
+    /// `ScaleY` / `Spacing` / `Angle` / `BorderStyle` / `Encoding` /
+    /// `SecondaryColour` / `AlphaLevel`) stay reachable on the
+    /// `StyleDef` itself; the projection captures what the IR models.
+    ///
+    /// `ssa` selects the alignment numbering scheme (the legacy SSA bit
+    /// layout vs the ASS numpad layout) — pass the owning
+    /// [`StyleTable::ass`] negated.
+    pub fn to_subtitle_style(&self, ssa: bool) -> SubtitleStyle {
+        let align_n: i32 = self.alignment.trim().parse().unwrap_or(2);
+        let align = if ssa {
+            crate::ssa_alignment_to_textalign(align_n)
+        } else {
+            crate::ass_alignment_to_textalign(align_n)
+        };
+        SubtitleStyle {
+            name: if self.name.is_empty() {
+                "Default".to_string()
+            } else {
+                self.name.clone()
+            },
+            font_family: (!self.fontname.is_empty()).then(|| self.fontname.clone()),
+            font_size: self.fontsize.parse().ok(),
+            primary_color: crate::parse_ass_color(&self.primary_colour),
+            outline_color: crate::parse_ass_color(&self.outline_colour),
+            back_color: crate::parse_ass_color(&self.back_colour),
+            bold: crate::parse_bool_flag(&self.bold),
+            italic: crate::parse_bool_flag(&self.italic),
+            underline: crate::parse_bool_flag(&self.underline),
+            strike: crate::parse_bool_flag(&self.strikeout),
+            align,
+            margin_l: self.margin_l.trim().parse().ok(),
+            margin_r: self.margin_r.trim().parse().ok(),
+            margin_v: self.margin_v.trim().parse().ok(),
+            outline: self.outline.trim().parse().ok(),
+            shadow: self.shadow.trim().parse().ok(),
+        }
+    }
+}
+
+impl Event {
+    /// Project a `Dialogue:` event onto a shared [`SubtitleCue`].
+    ///
+    /// Returns `None` for non-`Dialogue` event kinds (Comment events,
+    /// Picture / Sound / Movie / Command lines) which the IR cue path
+    /// does not represent. Timing parses through the same `H:MM:SS.cc`
+    /// reader the base parser uses; the `Text` column runs through the
+    /// override-tag segmenter so the cue carries styled segments +
+    /// positioning.
+    pub fn to_subtitle_cue(&self) -> Option<oxideav_core::SubtitleCue> {
+        if self.kind != EventKind::Dialogue {
+            return None;
+        }
+        let start_us = crate::parse_ass_timestamp(self.start.trim()).unwrap_or(0);
+        let end_us = crate::parse_ass_timestamp(self.end.trim()).unwrap_or(0);
+        let style_ref = if self.style.trim().is_empty() {
+            None
+        } else {
+            Some(self.style.trim().to_string())
+        };
+        let (segments, positioning) = crate::parse_ass_text(&self.text);
+        Some(oxideav_core::SubtitleCue {
+            start_us,
+            end_us,
+            style_ref,
+            positioning,
+            segments,
+        })
+    }
+}
+
+impl AssScript {
+    /// Project the whole script onto the shared [`SubtitleTrack`] IR.
+    ///
+    /// `[Script Info]` `Key: Value` pairs become track metadata (keys
+    /// lower-cased with spaces folded to `_`, matching the base
+    /// [`parse`](crate::parse) convention), every style row becomes a
+    /// [`SubtitleStyle`], and every `Dialogue:` event becomes a
+    /// [`SubtitleCue`]. Comment / Picture / Sound / Movie / Command
+    /// events are skipped (the IR cue stream is dialogue-only), matching
+    /// the base parser's behaviour.
+    ///
+    /// This is the lossy projection; the structured [`AssScript`] keeps
+    /// the full field set, so a caller wanting field-level fidelity
+    /// should serialise the [`AssScript`] directly rather than going
+    /// through the IR.
+    pub fn to_track(&self) -> SubtitleTrack {
+        let mut track = SubtitleTrack {
+            source: Some(SourceFormat::AssOrSsa),
+            ..SubtitleTrack::default()
+        };
+        for section in &self.sections {
+            match section {
+                Section::ScriptInfo(info) => {
+                    for line in &info.lines {
+                        if let InfoLine::Pair { key, value } = line {
+                            track.metadata.push((
+                                key.trim().to_ascii_lowercase().replace(' ', "_"),
+                                value.trim().to_string(),
+                            ));
+                        }
+                    }
+                }
+                Section::Styles(t) => {
+                    let ssa = !t.ass;
+                    for s in &t.styles {
+                        track.styles.push(s.to_subtitle_style(ssa));
+                    }
+                }
+                Section::Events(t) => {
+                    for ev in &t.events {
+                        if let Some(cue) = ev.to_subtitle_cue() {
+                            track.cues.push(cue);
+                        }
+                    }
+                }
+                Section::Raw(_) => {}
+            }
+        }
+        track
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Parsing
 
 /// Parse raw bytes into a structured [`AssScript`].
@@ -917,5 +1048,69 @@ Dialogue: Marked=0,0:00:01.00,0:00:02.00,Def,,0,0,0,,hi\n";
         // Round-trips structurally.
         let s2 = parse_script(&s.serialise());
         assert_eq!(s, s2);
+    }
+
+    #[test]
+    fn to_track_projects_metadata_styles_and_cues() {
+        let s = parse_script(ASS.as_bytes());
+        let track = s.to_track();
+        // Script Info pairs → metadata with lower_snake keys.
+        assert!(track
+            .metadata
+            .iter()
+            .any(|(k, v)| k == "title" && v == "Demo"));
+        assert!(track
+            .metadata
+            .iter()
+            .any(|(k, v)| k == "playresx" && v == "1280"));
+        // Both style rows projected.
+        assert_eq!(track.styles.len(), 2);
+        let title = track.styles.iter().find(|s| s.name == "Title").unwrap();
+        assert_eq!(title.font_family.as_deref(), Some("Verdana"));
+        assert_eq!(title.font_size, Some(72.0));
+        assert!(title.bold, "SSA -1 must read as bold true");
+        // Only the two Dialogue events become cues (the Comment is
+        // skipped, matching the IR dialogue-only convention).
+        assert_eq!(track.cues.len(), 2);
+        assert_eq!(track.cues[0].start_us, 1_000_000);
+        assert_eq!(track.cues[0].end_us, 3_000_000);
+        assert_eq!(track.cues[0].style_ref.as_deref(), Some("Default"));
+        assert_eq!(track.cues[1].style_ref.as_deref(), Some("Title"));
+    }
+
+    #[test]
+    fn to_subtitle_cue_skips_non_dialogue() {
+        let ev = Event {
+            kind: EventKind::Comment,
+            start: "0:00:01.00".into(),
+            end: "0:00:02.00".into(),
+            ..Event::default()
+        };
+        assert!(ev.to_subtitle_cue().is_none());
+        let dlg = Event {
+            kind: EventKind::Dialogue,
+            ..ev
+        };
+        assert!(dlg.to_subtitle_cue().is_some());
+    }
+
+    #[test]
+    fn to_subtitle_style_colour_and_alignment() {
+        // &H00FF0000 → opaque blue; ASS numpad 8 → top-centre, which the
+        // IR's horizontal-only TextAlign captures as Center.
+        let sd = StyleDef {
+            name: "X".into(),
+            fontname: "Arial".into(),
+            fontsize: "20".into(),
+            primary_colour: "&H00FF0000".into(),
+            alignment: "8".into(),
+            ..StyleDef::default()
+        };
+        let style = sd.to_subtitle_style(false);
+        assert_eq!(style.primary_color, Some((0, 0, 255, 255)));
+        assert_eq!(style.align, oxideav_core::TextAlign::Center);
+        // Empty name falls back to Default.
+        let empty = StyleDef::default().to_subtitle_style(false);
+        assert_eq!(empty.name, "Default");
     }
 }
