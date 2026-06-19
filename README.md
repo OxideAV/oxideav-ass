@@ -67,6 +67,49 @@ let track = oxideav_ass::parse(&std::fs::read("sub.ass")?)?;
 let out_bytes = oxideav_ass::write(&track);
 ```
 
+### Structured document model
+
+For callers that need *field-level* fidelity — reading or editing every
+column of every line and re-serialising without the shared IR's lossy
+projection — the crate exposes a structured document model alongside the
+IR path:
+
+```rust
+let script = oxideav_ass::parse_script(&std::fs::read("sub.ass")?);
+// Section-by-section, fully-typed access:
+for style in script.styles() {
+    println!("{} @ {}pt, border-style {:?}", style.name, style.fontsize,
+             style.border_style_typed());
+}
+for event in script.events() {
+    let (l, r, v) = event.margins_typed();          // per-event margins
+    let tags = event.override_tags();               // typed \pos / \fad / …
+    println!("{:?} layer={} {:?}", event.kind, event.layer_typed().resolve(),
+             event.effect_typed());
+    let _ = (l, r, v, tags);
+}
+// Edit + re-serialise (byte-stable, re-parse fixpoint):
+let out_bytes = script.serialise();
+// Or project onto the shared IR (lossy, dialogue-only cue stream):
+let track = script.to_track();
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`AssScript` keeps every section in source order — `[Script Info]` as
+ordered key/value/comment/blank lines, `[V4+ Styles]` / legacy
+`[V4 Styles]` as a `Format:`-aware table of `StyleDef` rows capturing
+**all** SSA v4.x / ASS columns (incl. `SecondaryColour` / `AlphaLevel` /
+`ScaleX` / `ScaleY` / `Spacing` / `Angle` / `BorderStyle` / `Encoding`),
+`[Events]` as a `Format:`-aware table of `Event` rows tagged by
+`EventKind` (`Dialogue` / `Comment` / `Picture` / `Sound` / `Movie` /
+`Command`), and every other section (`[Fonts]`, `[Graphics]`, editor-
+private `[Aegisub …]` blocks) verbatim as a `RawSection`. Colour and
+numeric columns keep their raw wire token so re-serialisation preserves
+the author's exact spelling, and `serialise()` is a fixpoint under
+re-parse. Typed accessors (`layer_typed` / `effect_typed` /
+`margins_typed` / `border_style_typed` / `encoding_typed` /
+`override_tags`) reuse the per-column modules below.
+
 ### Format conversion
 
 Direct ASS / SRT and ASS / WebVTT conversion helpers are exposed — they
