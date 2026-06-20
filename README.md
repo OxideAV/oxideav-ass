@@ -128,6 +128,33 @@ What the parser understands and preserves on round-trip:
 
 - `[Script Info]` — header key/value pairs captured as track metadata;
   comment lines (`;` / `!`) preserved inside extradata.
+- **Typed `[Script Info]` document-level accessors** (`script_info`
+  module) — the SSA v4.x / ASS spec documents several `[Script Info]`
+  keys as document-wide render parameters: `WrapStyle` (the default
+  line-wrapping mode `0`–`3`, numbered identically to the per-line `\q`
+  override — smart-even / end-of-line / no-wrap / smart-wide),
+  `Collisions` (overlapping-subtitle reposition policy — `Normal` stacks
+  upward from the bottom margin, `Reverse` shifts earlier lines up to
+  make room), `PlayResX` / `PlayResY` (the script-resolution pixel space
+  every `\pos` / `\move` / `\clip` / `\org` coordinate lives in),
+  `PlayDepth` (colour depth in bits), and `Timer` (the playback timer
+  speed as a percentage). The base `parse` keeps these as raw
+  `metadata` strings; `oxideav_ass::parse_wrap_style_field` /
+  `parse_collisions_field` / `parse_play_res_field` /
+  `parse_play_depth_field` / `parse_timer_field` lift them into typed
+  values, and the structured model surfaces them on
+  `ScriptInfo::{wrap_style, collisions, play_res_x, play_res_y,
+  play_depth, timer}`. The resolution / depth accessors return
+  `Option<u32>` (`None` when the header is absent or non-positive, so
+  the caller picks the video-resolution fall-back); `Timer` is returned
+  as a fractional multiplier (`"100.0000"` → `1.0`). Every field parser
+  is total — a malformed value collapses to the spec's documented
+  default (`WrapStyle` → smart-even, `Collisions` → `Normal`, `Timer` →
+  `1.0`). `WrapStyle::from_code` / `WrapStyle::resolve_override` bridge
+  the document default to a per-line `\q` override (the per-line code
+  wins when present), so a renderer reasons about one wrapping model
+  whether the mode arrives via the header or a tag. `ScaledBorderAndShadow`
+  is not modelled — it is absent from both mirrored spec documents.
 - **Unknown sections preserved** — editor-private blocks like
   `[Aegisub Project Garbage]`, `[Aegisub Extradata]`, `[Aegisub Style
   Storage]`, `[Fonts]`, `[Graphics]`, and any other named section not
