@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - typed accessor for the per-style Alignment column (ASS numpad + legacy
   SSA `+4`/`+8` schemes), surfacing the vertical row the base parser drops
 - bake \i synthetic-italic oblique slant into rasterised RGBA glyphs
+- typed document-level `[Script Info]` accessors (`script_info` module):
+  `WrapStyle` (0..3, matching `\q`), `Collisions` (Normal/Reverse),
+  `PlayResX` / `PlayResY` / `PlayDepth`, and `Timer` (percentage →
+  multiplier), surfaced on `ScriptInfo::{wrap_style, collisions,
+  play_res_x, play_res_y, play_depth, timer}`
 
 ## [0.0.9](https://github.com/OxideAV/oxideav-ass/compare/v0.0.8...v0.0.9) - 2026-06-14
 

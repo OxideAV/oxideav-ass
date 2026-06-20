@@ -107,6 +107,47 @@ impl ScriptInfo {
             .map(|v| v.trim().contains('+'))
             .unwrap_or(false)
     }
+
+    /// Typed [`WrapStyle`](crate::script_info::WrapStyle) for the
+    /// `WrapStyle` header. A missing header resolves to the spec's
+    /// default smart-even wrapping mode.
+    pub fn wrap_style(&self) -> crate::script_info::WrapStyle {
+        crate::script_info::parse_wrap_style_field(self.get("WrapStyle").unwrap_or(""))
+    }
+
+    /// Typed [`Collisions`](crate::script_info::Collisions) policy for the
+    /// `Collisions` header. A missing header resolves to the spec's
+    /// default `Normal` policy.
+    pub fn collisions(&self) -> crate::script_info::Collisions {
+        crate::script_info::parse_collisions_field(self.get("Collisions").unwrap_or(""))
+    }
+
+    /// Script-resolution width from the `PlayResX` header, or [`None`]
+    /// when the header is absent or carries a non-positive / malformed
+    /// value (the caller falls back to the video resolution).
+    pub fn play_res_x(&self) -> Option<u32> {
+        crate::script_info::parse_play_res_field(self.get("PlayResX")?)
+    }
+
+    /// Script-resolution height from the `PlayResY` header, or [`None`]
+    /// when the header is absent or carries a non-positive / malformed
+    /// value (the caller falls back to the video resolution).
+    pub fn play_res_y(&self) -> Option<u32> {
+        crate::script_info::parse_play_res_field(self.get("PlayResY")?)
+    }
+
+    /// Colour depth (bits) from the `PlayDepth` header, or [`None`] when
+    /// the header is absent or malformed.
+    pub fn play_depth(&self) -> Option<u32> {
+        crate::script_info::parse_play_depth_field(self.get("PlayDepth")?)
+    }
+
+    /// Playback timer speed as a fractional multiplier from the `Timer`
+    /// header (the documented percentage divided by 100; `"100.0000"` →
+    /// `1.0`). A missing or malformed header resolves to `1.0` (100%).
+    pub fn timer(&self) -> f64 {
+        crate::script_info::parse_timer_field(self.get("Timer").unwrap_or(""))
+    }
 }
 
 /// A style table: the `Format:` field order plus the decoded rows.
@@ -976,6 +1017,45 @@ Dialogue: 1,0:00:04.00,0:00:06.00,Title,,0,0,0,Banner;50,Scrolling, text here\n"
             .lines
             .iter()
             .any(|l| matches!(l, InfoLine::Comment(c) if c.contains("A comment line"))));
+    }
+
+    #[test]
+    fn script_info_typed_document_fields() {
+        use crate::script_info::{Collisions, WrapStyle};
+        let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+PlayResX: 1920\n\
+PlayResY: 1080\n\
+PlayDepth: 32\n\
+WrapStyle: 2\n\
+Collisions: Reverse\n\
+Timer: 100.0000\n";
+        let s = parse_script(src.as_bytes());
+        let info = s.script_info().unwrap();
+        assert_eq!(info.play_res_x(), Some(1920));
+        assert_eq!(info.play_res_y(), Some(1080));
+        assert_eq!(info.play_depth(), Some(32));
+        assert_eq!(info.wrap_style(), WrapStyle::NoWrap);
+        assert!(!info.wrap_style().wraps_automatically());
+        assert_eq!(info.collisions(), Collisions::Reverse);
+        assert!(info.collisions().is_reverse());
+        assert!((info.timer() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn script_info_typed_defaults_when_headers_absent() {
+        use crate::script_info::{Collisions, WrapStyle};
+        // A header-light script: only ScriptType present. Every typed
+        // document accessor resolves to the spec default.
+        let src = "[Script Info]\nScriptType: v4.00+\n";
+        let s = parse_script(src.as_bytes());
+        let info = s.script_info().unwrap();
+        assert_eq!(info.wrap_style(), WrapStyle::SmartEven);
+        assert_eq!(info.collisions(), Collisions::Normal);
+        assert_eq!(info.play_res_x(), None);
+        assert_eq!(info.play_res_y(), None);
+        assert_eq!(info.play_depth(), None);
+        assert!((info.timer() - 1.0).abs() < 1e-9);
     }
 
     #[test]

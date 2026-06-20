@@ -31,6 +31,7 @@ pub mod event_effect;
 #[cfg(feature = "render")]
 pub mod render;
 pub mod script;
+pub mod script_info;
 pub mod style_alignment;
 pub mod style_border;
 pub mod style_encoding;
@@ -52,6 +53,10 @@ pub use render::{make_animated_decoder, AnimatedRenderedDecoder};
 pub use script::{
     parse_script, AssScript, Event, EventKind, EventTable, InfoLine, RawSection, ScriptInfo,
     Section, StyleDef, StyleTable,
+};
+pub use script_info::{
+    parse_collisions_field, parse_play_depth_field, parse_play_res_field, parse_timer_field,
+    parse_wrap_style_field, Collisions, WrapStyle,
 };
 pub use style_alignment::{parse_alignment_field, AlignH, AlignV, StyleAlignment};
 pub use style_border::{parse_border_style_field, BorderStyle};
