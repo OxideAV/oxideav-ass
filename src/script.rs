@@ -1043,6 +1043,42 @@ Timer: 100.0000\n";
     }
 
     #[test]
+    fn wrap_style_document_default_resolved_against_per_line_q() {
+        use crate::script_info::WrapStyle;
+        // Document default is \q2 (no-wrap); one event carries a per-line
+        // \q1 override and another carries none. The effective wrap style
+        // is the per-line override when present, else the document
+        // default.
+        let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+WrapStyle: 2\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\q1}end of line wrap\n\
+Dialogue: 0,0:00:02.00,0:00:03.00,Default,,0,0,0,,no override here\n";
+        let s = parse_script(src.as_bytes());
+        let doc_default = s.script_info().unwrap().wrap_style();
+        assert_eq!(doc_default, WrapStyle::NoWrap);
+
+        let events = s.events();
+        // Event 0: \q1 override → EndOfLine, superseding the doc default.
+        let q0 = events[0].override_tags().iter().find_map(|t| match t {
+            crate::AnimatedTag::Q(n) => Some(*n),
+            _ => None,
+        });
+        assert_eq!(doc_default.resolve_override(q0), WrapStyle::EndOfLine);
+
+        // Event 1: no override → keeps the doc default (NoWrap).
+        let q1 = events[1].override_tags().iter().find_map(|t| match t {
+            crate::AnimatedTag::Q(n) => Some(*n),
+            _ => None,
+        });
+        assert_eq!(q1, None);
+        assert_eq!(doc_default.resolve_override(q1), WrapStyle::NoWrap);
+    }
+
+    #[test]
     fn script_info_typed_defaults_when_headers_absent() {
         use crate::script_info::{Collisions, WrapStyle};
         // A header-light script: only ScriptType present. Every typed

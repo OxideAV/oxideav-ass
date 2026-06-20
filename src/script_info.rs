@@ -91,6 +91,55 @@ impl WrapStyle {
     pub fn wraps_automatically(self) -> bool {
         !matches!(self, WrapStyle::NoWrap)
     }
+
+    /// Build a [`WrapStyle`] from a raw `0`..=`3` integer code — the
+    /// numbering shared by the document `WrapStyle` header and the
+    /// per-line `\q` override. Out-of-range codes fall back to
+    /// [`WrapStyle::SmartEven`] (mode `0`), matching the field parser.
+    ///
+    /// This is the bridge between the per-line wrap override surfaced by
+    /// the [`animate`](crate::animate) module as a raw
+    /// [`RenderState::wrap_style`](crate::animate::RenderState::wrap_style)
+    /// `Option<u8>` and the typed document model — see
+    /// [`resolve_override`](WrapStyle::resolve_override).
+    #[inline]
+    pub fn from_code(code: u8) -> WrapStyle {
+        match code {
+            1 => WrapStyle::EndOfLine,
+            2 => WrapStyle::NoWrap,
+            3 => WrapStyle::SmartWide,
+            _ => WrapStyle::SmartEven,
+        }
+    }
+
+    /// Resolve the effective wrap style for a line, given the per-line
+    /// `\q` override (if any).
+    ///
+    /// Per the spec the document `WrapStyle` header is the *default*
+    /// wrapping mode, and a per-line `\q<n>` override (surfaced as a raw
+    /// `Some(code)` from
+    /// [`RenderState::wrap_style`](crate::animate::RenderState::wrap_style))
+    /// supersedes it for that line only. `self` is the document default;
+    /// `q_override` is the per-line code. `None` keeps the document
+    /// default; `Some(code)` switches to that mode.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use oxideav_ass::script_info::WrapStyle;
+    ///
+    /// // Document default smart-even, no per-line override.
+    /// assert_eq!(WrapStyle::SmartEven.resolve_override(None), WrapStyle::SmartEven);
+    /// // A per-line \q2 supersedes the document default.
+    /// assert_eq!(WrapStyle::SmartEven.resolve_override(Some(2)), WrapStyle::NoWrap);
+    /// ```
+    #[inline]
+    pub fn resolve_override(self, q_override: Option<u8>) -> WrapStyle {
+        match q_override {
+            Some(code) => WrapStyle::from_code(code),
+            None => self,
+        }
+    }
 }
 
 /// Resolve the `[Script Info]` `WrapStyle` value into a typed
@@ -318,6 +367,55 @@ mod tests {
         assert_eq!(parse_wrap_style_field(""), WrapStyle::SmartEven);
         assert_eq!(parse_wrap_style_field("   "), WrapStyle::SmartEven);
         assert_eq!(parse_wrap_style_field("\t"), WrapStyle::SmartEven);
+    }
+
+    #[test]
+    fn wrap_style_from_code() {
+        assert_eq!(WrapStyle::from_code(0), WrapStyle::SmartEven);
+        assert_eq!(WrapStyle::from_code(1), WrapStyle::EndOfLine);
+        assert_eq!(WrapStyle::from_code(2), WrapStyle::NoWrap);
+        assert_eq!(WrapStyle::from_code(3), WrapStyle::SmartWide);
+        // Out-of-range codes fall back to mode 0.
+        for code in [4u8, 5, 9, 200, 255] {
+            assert_eq!(WrapStyle::from_code(code), WrapStyle::SmartEven);
+        }
+        // from_code round-trips as_code for the four valid modes.
+        for ws in [
+            WrapStyle::SmartEven,
+            WrapStyle::EndOfLine,
+            WrapStyle::NoWrap,
+            WrapStyle::SmartWide,
+        ] {
+            assert_eq!(WrapStyle::from_code(ws.as_code()), ws);
+        }
+    }
+
+    #[test]
+    fn wrap_style_resolve_override() {
+        // No per-line \q: keep the document default whatever it is.
+        for doc in [
+            WrapStyle::SmartEven,
+            WrapStyle::EndOfLine,
+            WrapStyle::NoWrap,
+            WrapStyle::SmartWide,
+        ] {
+            assert_eq!(doc.resolve_override(None), doc);
+        }
+        // A per-line \q supersedes the document default.
+        assert_eq!(
+            WrapStyle::SmartEven.resolve_override(Some(2)),
+            WrapStyle::NoWrap
+        );
+        assert_eq!(
+            WrapStyle::NoWrap.resolve_override(Some(0)),
+            WrapStyle::SmartEven
+        );
+        // An out-of-range per-line code falls back to mode 0, not the
+        // document default.
+        assert_eq!(
+            WrapStyle::SmartWide.resolve_override(Some(9)),
+            WrapStyle::SmartEven
+        );
     }
 
     #[test]
