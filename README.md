@@ -380,6 +380,27 @@ What the parser understands and preserves on round-trip:
   upright — the style's `Italic` column is not yet plumbed through
   to the renderer (the same gap `\u` / `\s` / `\fsp` fall through).
   Opt out via `default-features = false`.
+- **`\q` wrap-mode word-wrap** (`render` cargo feature) — the
+  `AnimatedRenderedDecoder` resolves the effective SSA wrap mode per
+  rendered line and breaks accordingly instead of always greedy-
+  wrapping. The per-line `\q<n>` override (`RenderState::wrap_style`)
+  wins over the decoder's `default_wrap_style` field — the document-
+  level `[Script Info]` `WrapStyle` header, defaulting to the spec's
+  implicit mode `0` (smart-even) — via
+  `WrapStyle::resolve_override`. The four modes follow the `\q`
+  reference: mode `2` (no-wrap) never auto-breaks (the line runs past
+  the edge; only explicit `\n` / `\N` split it), mode `1` (end-of-
+  line) greedy-fills each row to the edge, and modes `0` (smart-even)
+  / `3` (smart-wide) balance the visual rows so they come out as even
+  in width as the word boundaries allow. Smart wrapping never uses
+  more rows than the greedy fill would: it counts that row budget,
+  binary-searches the tightest width that still fits the budget, and
+  greedy-fills there so the early rows stop hogging words and the
+  short tail evens out. Mode `3` reverses the fill so the leftover
+  slack lands on the *upper* rows, making the lower rows the wider
+  ones (mode `0` keeps the natural top-wider bias). A lone word wider
+  than the canvas can't be split, so every mode keeps it intact on
+  its own row. Opt out via `default-features = false`.
 - **`\p` drawing-mode rasterisation** (`render` cargo feature) — a
   cue whose resolved `RenderState::drawing_scale` is `Some(N)` with
   `N >= 1` is no longer shaped as glyphs: the
