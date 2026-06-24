@@ -89,6 +89,7 @@ use oxideav_core::{
 use oxideav_scribe::{FaceChain, Shaper};
 
 use crate::animate::{ClipRect, RenderState};
+use crate::script_info::WrapStyle;
 use crate::{drawing, extract_cue_animation};
 
 /// Animated subtitle decoder. See module docs.
@@ -114,6 +115,15 @@ pub struct AnimatedRenderedDecoder {
     pub side_margin_px: u32,
     /// Pixel margin between the canvas bottom and the lowest baseline.
     pub bottom_margin_px: u32,
+    /// Document-level default wrapping mode (the `[Script Info]`
+    /// `WrapStyle` header). A per-line `\q<n>` override
+    /// ([`RenderState::wrap_style`]) supersedes this for that line; when
+    /// no override is present this default applies. Per the spec the
+    /// implicit default when the header is absent is
+    /// [`WrapStyle::SmartEven`] (mode `0`), so that is the constructor
+    /// value; callers that parsed a different `WrapStyle` from the
+    /// document header set it here.
+    pub default_wrap_style: WrapStyle,
 }
 
 /// One decoded cue + its lazily-evaluated animation.
@@ -138,6 +148,7 @@ impl AnimatedRenderedDecoder {
             font_size_px: 24.0,
             side_margin_px: 8,
             bottom_margin_px: 24,
+            default_wrap_style: WrapStyle::SmartEven,
         }
     }
 
@@ -265,9 +276,21 @@ impl AnimatedRenderedDecoder {
         // `\fsp` could fit fewer glyphs per visual line than the
         // wrapper thought.
         let fsp = state.letter_spacing.unwrap_or(0.0);
+        // Resolve the effective wrap mode for this line. The per-line
+        // `\q<n>` override (surfaced on `RenderState::wrap_style`) wins
+        // over the document `WrapStyle` header; absent an override the
+        // decoder's `default_wrap_style` applies. The four modes match
+        // the SSA spec (`\q` reference):
+        //   * mode 0 (SmartEven) / 3 (SmartWide) — break so the visual
+        //     rows are as even in width as the word boundaries allow,
+        //     biased top-wider (0) or bottom-wider (3) on a tie.
+        //   * mode 1 (EndOfLine) — greedy fill, break at the edge.
+        //   * mode 2 (NoWrap) — never auto-break; lines run past the
+        //     edge and only explicit `\n` / `\N` break.
+        let wrap_mode = self.default_wrap_style.resolve_override(state.wrap_style);
         let mut visual_lines: Vec<String> = Vec::new();
         for line in &logical_lines {
-            for v in wrap_line(line, face, size_px, max_text_w as f32, fsp) {
+            for v in wrap_line(line, face, size_px, max_text_w as f32, fsp, wrap_mode) {
                 visual_lines.push(v);
             }
         }
@@ -1579,18 +1602,68 @@ fn measure_with_fsp(face: &FaceChain, text: &str, size_px: f32, fsp: f32) -> f32
     base + (n as f32 - 1.0) * fsp
 }
 
-/// Greedy word-wrap by shaped width. Returns visual lines. `fsp` is
-/// the `\fsp<spacing>` letter-spacing in script-resolution pixels and
-/// is added to the measured line width so the wrapper picks the same
-/// breakpoints the per-glyph placement loop will hit.
-fn wrap_line(line: &str, face: &FaceChain, size_px: f32, max_w: f32, fsp: f32) -> Vec<String> {
+/// Word-wrap a single logical line (already split on `\N` / `\n`) by
+/// shaped width, honouring the SSA `\q` wrap mode. Returns visual
+/// lines. `fsp` is the `\fsp<spacing>` letter-spacing in
+/// script-resolution pixels and is added to the measured line width so
+/// the wrapper picks the same breakpoints the per-glyph placement loop
+/// will hit.
+///
+/// * [`WrapStyle::NoWrap`] (mode `2`) — never auto-break: the whole
+///   logical line is returned as one visual line, even when it runs
+///   past `max_w`. Only the caller's explicit `\n` / `\N` splits
+///   produce separate lines.
+/// * [`WrapStyle::EndOfLine`] (mode `1`) — greedy fill: pack as many
+///   words as fit, break, repeat.
+/// * [`WrapStyle::SmartEven`] (mode `0`) / [`WrapStyle::SmartWide`]
+///   (mode `3`) — balance the visual rows so they come out as even in
+///   width as the word boundaries allow (see [`wrap_line_smart`]),
+///   biased top-wider (`0`) or bottom-wider (`3`) on a tie.
+fn wrap_line(
+    line: &str,
+    face: &FaceChain,
+    size_px: f32,
+    max_w: f32,
+    fsp: f32,
+    mode: WrapStyle,
+) -> Vec<String> {
     if line.is_empty() {
         return vec![String::new()];
+    }
+    // Mode 2: no automatic wrapping. The line is emitted verbatim
+    // regardless of width; only explicit breaks (handled by the caller)
+    // split it.
+    if mode == WrapStyle::NoWrap {
+        return vec![line.to_string()];
     }
     if measure_with_fsp(face, line, size_px, fsp) <= max_w {
         return vec![line.to_string()];
     }
-    // Tokenise into space-separated words; greedy fill.
+    match mode {
+        WrapStyle::SmartEven | WrapStyle::SmartWide => wrap_line_smart(
+            line,
+            face,
+            size_px,
+            max_w,
+            fsp,
+            mode == WrapStyle::SmartWide,
+        ),
+        // Mode 1 (and any mode that reached here that isn't smart): the
+        // spec's end-of-line greedy fill.
+        _ => wrap_line_greedy(line, face, size_px, max_w, fsp),
+    }
+}
+
+/// Greedy end-of-line word-wrap (SSA `\q1`): pack as many words as fit
+/// the width, then break. The fall-back wrapping for any non-smart,
+/// auto-wrapping mode.
+fn wrap_line_greedy(
+    line: &str,
+    face: &FaceChain,
+    size_px: f32,
+    max_w: f32,
+    fsp: f32,
+) -> Vec<String> {
     let words: Vec<&str> = line.split(' ').collect();
     let mut out: Vec<String> = Vec::new();
     let mut cur = String::new();
@@ -1613,6 +1686,111 @@ fn wrap_line(line: &str, face: &FaceChain, size_px: f32, max_w: f32, fsp: f32) -
         out.push(cur);
     }
     out
+}
+
+/// Smart balanced word-wrap (SSA `\q0` / `\q3`). The spec asks for the
+/// visual rows to come out "approximately equally long", using the same
+/// minimum number of rows the greedy fill would (so a smart line never
+/// occupies *more* rows than end-of-line wrapping), then balancing the
+/// per-row widths.
+///
+/// Algorithm:
+/// 1. Count the rows greedy wrapping needs at `max_w` — that's the row
+///    budget `rows`. Smart wrapping must not exceed it.
+/// 2. Find the smallest width limit `w` (binary-searched over the
+///    candidate prefix widths) at which the line still fits in `rows`
+///    rows under a greedy fill. Filling at that tighter limit pulls
+///    words down so the rows even out instead of cramming the early
+///    rows and leaving a short tail.
+/// 3. Greedy-fill at `w`. `bottom_wide` (`\q3`) reverses the fill so the
+///    leftover slack lands on the *upper* rows, making the lower rows
+///    the wider ones; `\q0` keeps the natural top-wider bias.
+fn wrap_line_smart(
+    line: &str,
+    face: &FaceChain,
+    size_px: f32,
+    max_w: f32,
+    fsp: f32,
+    bottom_wide: bool,
+) -> Vec<String> {
+    let words: Vec<&str> = line.split(' ').collect();
+    if words.len() <= 1 {
+        // A single token can't be balanced; greedy and smart agree.
+        return wrap_line_greedy(line, face, size_px, max_w, fsp);
+    }
+
+    // Row budget = the number of rows the unconstrained greedy fill uses.
+    let rows = wrap_line_greedy(line, face, size_px, max_w, fsp).len();
+    if rows <= 1 {
+        return vec![line.to_string()];
+    }
+
+    // The narrowest width we'd ever need is the widest single word (a row
+    // can never be narrower than its longest word). The widest is the
+    // full `max_w`. Binary-search the smallest width in that band that
+    // still fits the line into `rows` rows.
+    let widest_word = words
+        .iter()
+        .map(|w| measure_with_fsp(face, w, size_px, fsp))
+        .fold(0.0_f32, f32::max);
+    let mut lo = widest_word;
+    let mut hi = max_w;
+    // 24 bisections drive the band well below a sub-pixel residual for any
+    // realistic script-resolution width.
+    for _ in 0..24 {
+        let mid = (lo + hi) * 0.5;
+        if rows_needed(&words, face, size_px, fsp, mid) <= rows {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let target_w = hi;
+
+    if bottom_wide {
+        // `\q3`: balance with the lower rows wider. Fill the *reversed*
+        // word sequence at the same tightened width, then reverse each
+        // row's words back and the row order back. This puts the slack on
+        // the earlier (upper) rows.
+        let mut rev: Vec<&str> = words.clone();
+        rev.reverse();
+        let rev_line = rev.join(" ");
+        let mut packed = wrap_line_greedy(&rev_line, face, size_px, target_w, fsp);
+        packed.reverse();
+        for row in &mut packed {
+            let mut toks: Vec<&str> = row.split(' ').collect();
+            toks.reverse();
+            *row = toks.join(" ");
+        }
+        packed
+    } else {
+        wrap_line_greedy(line, face, size_px, target_w, fsp)
+    }
+}
+
+/// Number of rows a greedy fill of `words` needs at width `w`. A word
+/// wider than `w` still occupies its own row (it can't be split), so the
+/// count is well-defined for any positive `w`.
+fn rows_needed(words: &[&str], face: &FaceChain, size_px: f32, fsp: f32, w: f32) -> usize {
+    let mut rows = 0usize;
+    let mut cur = String::new();
+    for word in words {
+        let candidate = if cur.is_empty() {
+            (*word).to_string()
+        } else {
+            format!("{} {}", cur, word)
+        };
+        if cur.is_empty() || measure_with_fsp(face, &candidate, size_px, fsp) <= w {
+            cur = candidate;
+        } else {
+            rows += 1;
+            cur = (*word).to_string();
+        }
+    }
+    if !cur.is_empty() {
+        rows += 1;
+    }
+    rows.max(1)
 }
 
 /// Walk the cue segments and return the visible text (LineBreak →
@@ -2366,5 +2544,132 @@ mod tests {
             .count();
         assert_eq!(move_count, 2);
         assert_eq!(close_count, 2);
+    }
+
+    // ---- `\q` wrap-mode word-wrap ----
+
+    /// Load the bundled DejaVuSans fixture used by the integration
+    /// tests, returning `None` on a standalone build that doesn't ship
+    /// the workspace `oxideav-ttf` fixture (soft-skip, as in
+    /// `tests/render.rs`).
+    fn wrap_test_face() -> Option<FaceChain> {
+        let candidates = [
+            "../oxideav-ttf/tests/fixtures/DejaVuSans.ttf",
+            "../../crates/oxideav-ttf/tests/fixtures/DejaVuSans.ttf",
+        ];
+        for p in candidates {
+            if let Ok(b) = std::fs::read(p) {
+                if let Ok(face) = oxideav_scribe::Face::from_ttf_bytes(b) {
+                    return Some(FaceChain::new(face));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn nowrap_mode_never_breaks() {
+        let Some(face) = wrap_test_face() else {
+            return;
+        };
+        let line = "the quick brown fox jumps over the lazy dog again";
+        // A width far below the line's measured width would force several
+        // greedy rows, but mode 2 must keep it as one visual line.
+        let out = wrap_line(line, &face, 32.0, 10.0, 0.0, WrapStyle::NoWrap);
+        assert_eq!(out, vec![line.to_string()]);
+    }
+
+    #[test]
+    fn endofline_mode_greedy_fills() {
+        let Some(face) = wrap_test_face() else {
+            return;
+        };
+        let line = "alpha beta gamma delta epsilon zeta eta theta";
+        let max_w = measure(&face, "alpha beta gamma", 32.0) + 1.0;
+        let greedy = wrap_line(line, &face, 32.0, max_w, 0.0, WrapStyle::EndOfLine);
+        // First row is packed to the limit; reassembling all rows must
+        // recover the original word sequence with no loss or reordering.
+        assert!(greedy.len() >= 2, "expected multiple rows, got {greedy:?}");
+        assert_eq!(greedy.join(" "), line);
+        // The greedy first row should fit the most words possible — its
+        // measured width must not exceed the limit.
+        assert!(measure(&face, &greedy[0], 32.0) <= max_w);
+    }
+
+    #[test]
+    fn smart_mode_balances_rows() {
+        let Some(face) = wrap_test_face() else {
+            return;
+        };
+        // A line that greedy-wraps into 2 rows with a long first row and a
+        // short tail. Smart mode should even the two rows out.
+        let line = "aaaa bbbb cccc dddd eeee";
+        let max_w = measure(&face, "aaaa bbbb cccc dddd", 32.0) + 1.0;
+        let greedy = wrap_line(line, &face, 32.0, max_w, 0.0, WrapStyle::EndOfLine);
+        let smart = wrap_line(line, &face, 32.0, max_w, 0.0, WrapStyle::SmartEven);
+        // Same row budget (smart never uses more rows than greedy) and no
+        // word loss.
+        assert_eq!(smart.len(), greedy.len());
+        assert_eq!(smart.join(" "), line);
+        // The widest smart row should be no wider than the widest greedy
+        // row — balancing can only shrink the maximum.
+        let widest = |rows: &[String]| {
+            rows.iter()
+                .map(|r| measure(&face, r, 32.0))
+                .fold(0.0_f32, f32::max)
+        };
+        assert!(
+            widest(&smart) <= widest(&greedy) + 0.5,
+            "smart widest {} should not exceed greedy widest {}",
+            widest(&smart),
+            widest(&greedy)
+        );
+    }
+
+    #[test]
+    fn smart_wide_biases_lower_row() {
+        let Some(face) = wrap_test_face() else {
+            return;
+        };
+        // Three words, two rows. `\q0` puts the slack on the bottom row
+        // (top-wider on a 2/1 split); `\q3` flips it so the upper row is
+        // the short one.
+        let line = "one two three";
+        let max_w = measure(&face, "one two", 32.0) + 1.0;
+        let even = wrap_line(line, &face, 32.0, max_w, 0.0, WrapStyle::SmartEven);
+        let wide = wrap_line(line, &face, 32.0, max_w, 0.0, WrapStyle::SmartWide);
+        // Both modes preserve the words and the two-row budget.
+        assert_eq!(even.join(" "), line);
+        assert_eq!(wide.join(" "), line);
+        assert_eq!(even.len(), 2);
+        assert_eq!(wide.len(), 2);
+        // The bias differs: `\q3`'s first row carries fewer words than
+        // `\q0`'s first row (the slack moved up).
+        let first_words = |rows: &[String]| rows[0].split(' ').count();
+        assert!(
+            first_words(&wide) <= first_words(&even),
+            "q3 first row ({:?}) should not be wider than q0 first row ({:?})",
+            wide,
+            even
+        );
+    }
+
+    #[test]
+    fn single_word_unaffected_by_mode() {
+        let Some(face) = wrap_test_face() else {
+            return;
+        };
+        // A lone over-long word can't be split; every mode returns it
+        // intact on its own row.
+        let line = "supercalifragilisticexpialidocious";
+        for mode in [
+            WrapStyle::SmartEven,
+            WrapStyle::SmartWide,
+            WrapStyle::EndOfLine,
+            WrapStyle::NoWrap,
+        ] {
+            let out = wrap_line(line, &face, 32.0, 5.0, 0.0, mode);
+            assert_eq!(out, vec![line.to_string()], "mode {mode:?}");
+        }
     }
 }

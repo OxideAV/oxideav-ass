@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- renderer honours the SSA `\q` wrap mode: the `AnimatedRenderedDecoder`
+  now resolves the effective `WrapStyle` per line (per-line `\q<n>`
+  override over the new `default_wrap_style` document default) and wraps
+  accordingly — mode `2` (no-wrap) never auto-breaks, mode `1`
+  (end-of-line) greedy-fills, and modes `0`/`3` (smart) balance the
+  visual rows so they come out as even in width as the word boundaries
+  allow, biased top-wider (`0`) or bottom-wider (`3`) on a tie
+
 ### Fixed
 
 - preserve UTF-8 dialogue text: the segmenter no longer casts raw bytes
