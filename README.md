@@ -298,7 +298,7 @@ What the parser understands and preserves on round-trip:
   rendered glyphs grows by `fsp` script-resolution pixels (the spec
   describes the value as "the spacing between the individual
   letters", negative + decimal allowed). The widened line width is
-  also folded into the alignment + greedy word-wrap step so a
+  also folded into the alignment + `\q` wrap-mode word-wrap step so a
   positive `\fsp` cannot fit more glyphs per visual line than the
   no-override baseline; `\fsp` ramps inside `\t(...)` per the spec
   also surface here, since the typed extractor already populates
