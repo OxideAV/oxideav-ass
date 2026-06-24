@@ -1942,3 +1942,97 @@ fn strikeout_adds_ink_through_the_glyph_band() {
         "strikeout must add ink: plain={m_plain} struck={m_struck}"
     );
 }
+
+// ---- `\q` wrap-mode end-to-end through the decoder ----
+
+/// Render the first frame at `w × h` after forcing the decoder's
+/// document-level `default_wrap_style`. Mirrors `render_first_frame`
+/// but exercises the new wrap-mode plumbing.
+fn render_first_frame_wrap(
+    src: &str,
+    w: u32,
+    h: u32,
+    default_wrap: ass::script_info::WrapStyle,
+) -> Option<Frame> {
+    let face = load_face()?;
+    let inner = build_decoder(src);
+    let mut dec = AnimatedRenderedDecoder::new(inner, w, h, face);
+    dec.default_wrap_style = default_wrap;
+    dec.receive_frame().ok()
+}
+
+#[test]
+fn q2_no_wrap_keeps_one_wide_row() {
+    if load_face().is_none() {
+        return;
+    }
+    // A line far wider than the canvas. Under the smart default it wraps
+    // onto several rows (tall, narrow bbox); with `\q2` it stays on one
+    // row that runs past the edge (short, wide bbox). The override is
+    // carried inline so it supersedes whatever document default applies.
+    let long = "the quick brown fox jumps over the lazy dog";
+    let smart = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{long}\n");
+    let nowrap =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\q2}}{long}\n");
+    let (w, h) = (240u32, 200u32);
+    let f_smart = render_first_frame(&smart, w, h).expect("smart");
+    let f_nowrap = render_first_frame(&nowrap, w, h).expect("nowrap");
+    let bb_smart = alpha_bbox(&f_smart, w).expect("smart ink");
+    let bb_nowrap = alpha_bbox(&f_nowrap, w).expect("nowrap ink");
+
+    let height_of = |bb: (u32, u32, u32, u32)| bb.3 - bb.1;
+    let width_of = |bb: (u32, u32, u32, u32)| bb.2 - bb.0;
+    // No-wrap occupies a single row: shorter vertically than the wrapped
+    // multi-row layout.
+    assert!(
+        height_of(bb_nowrap) < height_of(bb_smart),
+        "q2 should be shorter: nowrap_h={} smart_h={}",
+        height_of(bb_nowrap),
+        height_of(bb_smart)
+    );
+    // …and wider — the single row spans more horizontal extent than any
+    // wrapped row.
+    assert!(
+        width_of(bb_nowrap) > width_of(bb_smart),
+        "q2 should be wider: nowrap_w={} smart_w={}",
+        width_of(bb_nowrap),
+        width_of(bb_smart)
+    );
+}
+
+#[test]
+fn q_override_supersedes_document_default() {
+    if load_face().is_none() {
+        return;
+    }
+    // Document default is no-wrap, but an inline `\q0` switches this line
+    // back to smart wrapping. The rendered line must therefore wrap onto
+    // multiple rows (taller bbox) rather than overrun on one.
+    let long = "the quick brown fox jumps over the lazy dog";
+    let doc_nowrap_plain =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{long}\n");
+    let doc_nowrap_override =
+        format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\q0}}{long}\n");
+    let (w, h) = (240u32, 200u32);
+    let f_plain =
+        render_first_frame_wrap(&doc_nowrap_plain, w, h, ass::script_info::WrapStyle::NoWrap)
+            .expect("plain");
+    let f_override = render_first_frame_wrap(
+        &doc_nowrap_override,
+        w,
+        h,
+        ass::script_info::WrapStyle::NoWrap,
+    )
+    .expect("override");
+    let bb_plain = alpha_bbox(&f_plain, w).expect("plain ink");
+    let bb_override = alpha_bbox(&f_override, w).expect("override ink");
+    let height_of = |bb: (u32, u32, u32, u32)| bb.3 - bb.1;
+    // The \q0 override re-enables wrapping → taller multi-row block than
+    // the document-default no-wrap single row.
+    assert!(
+        height_of(bb_override) > height_of(bb_plain),
+        "q0 override should wrap: override_h={} plain_h={}",
+        height_of(bb_override),
+        height_of(bb_plain)
+    );
+}
