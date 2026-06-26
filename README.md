@@ -122,6 +122,23 @@ let vtt = oxideav_ass::ass_to_webvtt(&ass_bytes)?;
 let ass = oxideav_ass::webvtt_to_ass(&vtt_bytes)?;
 ```
 
+The structured model also converts between the **SSA `[V4 Styles]`** and
+**ASS `[V4+ Styles]`** dialects in place. The two dialects carry the same
+underlying style + event data; they differ only in the `Format:` column
+set, the section header, the `Alignment` numbering scheme (numpad for
+ASS, the `+4` / `+8` bit scheme for legacy SSA), the event leading column
+(`Layer` integer for ASS, `Marked=N` for SSA), and the `ScriptType`
+header. `to_ass()` / `to_ssa()` (or `to_dialect(Dialect::…)`) rewrite all
+of those while preserving every captured column — a round-trip back to
+the originating dialect restores dialect-specific columns (ASS-only
+`ScaleX` / `ScaleY` / `Spacing` / `Angle` / `Underline` / `StrikeOut`,
+SSA-only `AlphaLevel`).
+
+```rust
+let script = oxideav_ass::parse_script(&ass_bytes);
+let ssa_bytes = script.to_ssa().serialise();   // ASS → legacy SSA
+```
+
 ## Feature coverage
 
 What the parser understands and preserves on round-trip:

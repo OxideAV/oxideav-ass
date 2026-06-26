@@ -53,8 +53,8 @@ pub use event_effect::{parse_effect_field, BannerDirection, EventEffect};
 #[cfg(feature = "render")]
 pub use render::{make_animated_decoder, AnimatedRenderedDecoder};
 pub use script::{
-    parse_script, AssScript, Event, EventKind, EventTable, InfoLine, RawSection, ScriptInfo,
-    Section, StyleDef, StyleTable,
+    parse_script, AssScript, Dialect, Event, EventKind, EventTable, InfoLine, RawSection,
+    ScriptInfo, Section, StyleDef, StyleTable,
 };
 pub use script_info::{
     parse_collisions_field, parse_play_depth_field, parse_play_res_field, parse_timer_field,

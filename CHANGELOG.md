@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SSA↔ASS dialect conversion on the structured model:
+  `AssScript::to_ass()` / `to_ssa()` / `to_dialect(Dialect)` rewrite the
+  `Format:` column set, the `[V4+ Styles]` vs `[V4 Styles]` header, the
+  `Alignment` numbering scheme (numpad ↔ `+4`/`+8` bit scheme), the
+  event leading column (`Layer` integer ↔ `Marked=N`), and the
+  `ScriptType` header — field-preserving, so a round-trip back to the
+  originating dialect restores dialect-specific columns
 - `collision` module: typed resolver for the `[Script Info]`
   `Collisions` reposition policy. `resolve_layout(boxes, geometry,
   policy)` places overlapping bottom-anchored lines vertically per the

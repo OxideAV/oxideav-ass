@@ -679,6 +679,224 @@ impl AssScript {
         }
         track
     }
+
+    /// Convert the whole script into the ASS `[V4+ Styles]` dialect.
+    ///
+    /// Returns a new [`AssScript`]; `self` is left unchanged. Equivalent
+    /// to [`to_dialect(Dialect::Ass)`](Self::to_dialect).
+    pub fn to_ass(&self) -> AssScript {
+        self.to_dialect(Dialect::Ass)
+    }
+
+    /// Convert the whole script into the legacy SSA `[V4 Styles]` dialect.
+    ///
+    /// Returns a new [`AssScript`]; `self` is left unchanged. Equivalent
+    /// to [`to_dialect(Dialect::Ssa)`](Self::to_dialect).
+    pub fn to_ssa(&self) -> AssScript {
+        self.to_dialect(Dialect::Ssa)
+    }
+
+    /// Convert the whole script into the requested [`Dialect`].
+    ///
+    /// The two dialects carry the *same* underlying style + event field
+    /// data; they differ only in the `Format:` column set, the
+    /// `[V4+ Styles]` vs `[V4 Styles]` section header, the `Alignment`
+    /// numbering scheme (numpad for ASS, the `+4`/`+8` bit scheme for
+    /// SSA), the event leading column (`Layer` integer for ASS,
+    /// `Marked=N` for SSA), and the `[Script Info]` `ScriptType` header
+    /// (`v4.00+` vs `v4.00`). The structured [`StyleDef`] already keeps
+    /// every column of both dialects, so the conversion is field-
+    /// preserving: re-emitting the result with [`serialise`](Self::serialise)
+    /// produces a syntactically valid file in the target dialect.
+    ///
+    /// Columns absent from the target dialect (e.g. ASS-only `ScaleX` /
+    /// `ScaleY` / `Spacing` / `Angle` / `Underline` / `StrikeOut` when
+    /// converting to SSA, or SSA-only `AlphaLevel` when converting to
+    /// ASS) are simply not emitted in the target `Format:` row; their
+    /// data is retained on the [`StyleDef`] so a later round-trip back to
+    /// the originating dialect restores them.
+    ///
+    /// Raw sections (`[Fonts]`, `[Graphics]`, editor-private blocks) and
+    /// `[Script Info]` ordering are preserved verbatim apart from the
+    /// `ScriptType` value.
+    pub fn to_dialect(&self, target: Dialect) -> AssScript {
+        let want_ass = target == Dialect::Ass;
+        let mut out = self.clone();
+        for section in &mut out.sections {
+            match section {
+                Section::ScriptInfo(info) => {
+                    for line in &mut info.lines {
+                        if let InfoLine::Pair { key, value } = line {
+                            if key.eq_ignore_ascii_case("ScriptType") {
+                                *value = if want_ass {
+                                    "v4.00+".to_string()
+                                } else {
+                                    "v4.00".to_string()
+                                };
+                            }
+                        }
+                    }
+                }
+                Section::Styles(table) => {
+                    let was_ssa = !table.ass;
+                    for s in &mut table.styles {
+                        // Re-encode the Alignment column into the target
+                        // scheme. The typed StyleAlignment normalises both
+                        // schemes to the same anchor, so we decode in the
+                        // source scheme and re-encode in the target one.
+                        let al =
+                            crate::style_alignment::parse_alignment_field(&s.alignment, was_ssa);
+                        s.alignment = if want_ass {
+                            al.as_numpad().to_string()
+                        } else {
+                            al.as_ssa().to_string()
+                        };
+                    }
+                    table.ass = want_ass;
+                    table.format = if want_ass {
+                        ass_style_format()
+                    } else {
+                        ssa_style_format()
+                    };
+                }
+                Section::Events(table) => {
+                    for ev in &mut table.events {
+                        ev.layer = convert_event_lead(&ev.layer, want_ass);
+                    }
+                    table.format = if want_ass {
+                        ass_event_format()
+                    } else {
+                        ssa_event_format()
+                    };
+                }
+                Section::Raw(_) => {}
+            }
+        }
+        out
+    }
+}
+
+/// The two ASS/SSA style dialects.
+///
+/// Selects the `Format:` column set, section header, `Alignment`
+/// numbering scheme, and event leading column. See
+/// [`AssScript::to_dialect`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dialect {
+    /// ASS `[V4+ Styles]` — numpad alignment, `Layer` event column,
+    /// `ScriptType: v4.00+`.
+    Ass,
+    /// Legacy SSA `[V4 Styles]` — bit-scheme alignment, `Marked` event
+    /// column, `ScriptType: v4.00`.
+    Ssa,
+}
+
+/// Canonical ASS `[V4+ Styles]` `Format:` column names.
+fn ass_style_format() -> Vec<String> {
+    [
+        "Name",
+        "Fontname",
+        "Fontsize",
+        "PrimaryColour",
+        "SecondaryColour",
+        "OutlineColour",
+        "BackColour",
+        "Bold",
+        "Italic",
+        "Underline",
+        "StrikeOut",
+        "ScaleX",
+        "ScaleY",
+        "Spacing",
+        "Angle",
+        "BorderStyle",
+        "Outline",
+        "Shadow",
+        "Alignment",
+        "MarginL",
+        "MarginR",
+        "MarginV",
+        "Encoding",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Canonical legacy SSA `[V4 Styles]` `Format:` column names.
+fn ssa_style_format() -> Vec<String> {
+    [
+        "Name",
+        "Fontname",
+        "Fontsize",
+        "PrimaryColour",
+        "SecondaryColour",
+        "TertiaryColour",
+        "BackColour",
+        "Bold",
+        "Italic",
+        "BorderStyle",
+        "Outline",
+        "Shadow",
+        "Alignment",
+        "MarginL",
+        "MarginR",
+        "MarginV",
+        "AlphaLevel",
+        "Encoding",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Canonical ASS `[Events]` `Format:` column names.
+fn ass_event_format() -> Vec<String> {
+    [
+        "Layer", "Start", "End", "Style", "Name", "MarginL", "MarginR", "MarginV", "Effect", "Text",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Canonical legacy SSA `[Events]` `Format:` column names.
+fn ssa_event_format() -> Vec<String> {
+    [
+        "Marked", "Start", "End", "Style", "Name", "MarginL", "MarginR", "MarginV", "Effect",
+        "Text",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Convert the event leading column between the ASS `Layer` integer and
+/// the SSA `Marked=N` form.
+///
+/// ASS-target: an SSA `Marked=N` token becomes the bare integer `N`
+/// (defaulting to `0` when the value is malformed); an already-bare
+/// integer passes through. SSA-target: a bare integer `N` becomes
+/// `Marked=N`; an already-`Marked=N` token passes through. The
+/// conversion is total — anything unrecognised maps to the `0` layer.
+fn convert_event_lead(raw: &str, want_ass: bool) -> String {
+    let t = raw.trim();
+    // Pull the numeric value out of either form.
+    let value = if let Some(rest) = t.strip_prefix("Marked=").or_else(|| {
+        // Tolerate `Marked =` / case variations.
+        t.split_once('=')
+            .filter(|(k, _)| k.trim().eq_ignore_ascii_case("Marked"))
+            .map(|(_, v)| v)
+    }) {
+        rest.trim().parse::<i32>().unwrap_or(0)
+    } else {
+        t.parse::<i32>().unwrap_or(0)
+    };
+    if want_ass {
+        value.to_string()
+    } else {
+        format!("Marked={value}")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1406,6 +1624,123 @@ Dialogue: Marked=0,0:00:01.00,0:00:02.00,Def,,0,0,0,,hi\n";
         // Round-trips structurally.
         let s2 = parse_script(&s.serialise());
         assert_eq!(s, s2);
+    }
+
+    #[test]
+    fn dialect_ass_to_ssa_rewrites_format_and_header() {
+        let s = parse_script(ASS.as_bytes());
+        let ssa = s.to_ssa();
+
+        // Style table flips to the SSA dialect + format.
+        let st = ssa.style_table().unwrap();
+        assert!(!st.ass);
+        assert_eq!(st.format, super::ssa_style_format());
+        // The Title row's ASS numpad alignment `8` (top-centre) becomes
+        // the SSA bit form `2 + 4 = 6` (centre + toptitle).
+        let title = st.styles.iter().find(|s| s.name == "Title").unwrap();
+        assert_eq!(title.alignment, "6");
+
+        // Events flip to the SSA `Marked` lead.
+        let et = ssa.event_table().unwrap();
+        assert_eq!(et.format, super::ssa_event_format());
+        assert_eq!(et.events[0].layer, "Marked=0");
+        // Layer `1` on the third event carries through as `Marked=1`.
+        assert_eq!(et.events[2].layer, "Marked=1");
+
+        // ScriptType header rewritten.
+        assert_eq!(ssa.script_info().unwrap().get("ScriptType"), Some("v4.00"));
+
+        // Serialises to a valid SSA file that re-parses as SSA.
+        let bytes = ssa.serialise();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.contains("[V4 Styles]"));
+        assert!(!text.contains("[V4+ Styles]"));
+        let re = parse_script(&bytes);
+        assert!(!re.style_table().unwrap().ass);
+    }
+
+    #[test]
+    fn dialect_ssa_to_ass_rewrites_format_and_header() {
+        let src = "[Script Info]\n\
+ScriptType: v4.00\n\
+\n\
+[V4 Styles]\n\
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, TertiaryColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, AlphaLevel, Encoding\n\
+Style: Def,Arial,24,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,-1,0,1,2,1,6,20,20,20,0,0\n\
+\n\
+[Events]\n\
+Format: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: Marked=0,0:00:01.00,0:00:02.00,Def,,0,0,0,,hi\n";
+        let ssa = parse_script(src.as_bytes());
+        let ass = ssa.to_ass();
+
+        let st = ass.style_table().unwrap();
+        assert!(st.ass);
+        assert_eq!(st.format, super::ass_style_format());
+        // SSA bit alignment `6` (centre + toptitle) becomes ASS numpad
+        // `8` (top-centre).
+        assert_eq!(st.styles[0].alignment, "8");
+        // SSA-only AlphaLevel data is retained on the StyleDef even
+        // though the ASS Format: row no longer lists it.
+        assert_eq!(st.styles[0].alpha_level, "0");
+
+        let et = ass.event_table().unwrap();
+        assert_eq!(et.format, super::ass_event_format());
+        // `Marked=0` lead becomes the bare ASS `Layer` integer `0`.
+        assert_eq!(et.events[0].layer, "0");
+
+        assert_eq!(ass.script_info().unwrap().get("ScriptType"), Some("v4.00+"));
+
+        let text = String::from_utf8(ass.serialise()).unwrap();
+        assert!(text.contains("[V4+ Styles]"));
+    }
+
+    #[test]
+    fn dialect_round_trip_preserves_alignment_anchor() {
+        // ASS → SSA → ASS keeps the alignment anchor (the bit/numpad
+        // schemes are lossless under StyleAlignment normalisation).
+        let s = parse_script(ASS.as_bytes());
+        let back = s.to_ssa().to_ass();
+        let orig_title = s
+            .style_table()
+            .unwrap()
+            .styles
+            .iter()
+            .find(|s| s.name == "Title")
+            .unwrap();
+        let back_title = back
+            .style_table()
+            .unwrap()
+            .styles
+            .iter()
+            .find(|s| s.name == "Title")
+            .unwrap();
+        assert_eq!(orig_title.alignment, back_title.alignment);
+        // Event lead survives the ASS → SSA → ASS trip.
+        assert_eq!(
+            s.event_table().unwrap().events[2].layer,
+            back.event_table().unwrap().events[2].layer
+        );
+    }
+
+    #[test]
+    fn dialect_to_ass_is_idempotent_on_ass_input() {
+        let s = parse_script(ASS.as_bytes());
+        let once = s.to_ass();
+        let twice = once.to_ass();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn convert_event_lead_is_total() {
+        // Malformed leads collapse to the 0 layer in either direction.
+        assert_eq!(super::convert_event_lead("junk", true), "0");
+        assert_eq!(super::convert_event_lead("junk", false), "Marked=0");
+        assert_eq!(super::convert_event_lead("Marked=7", true), "7");
+        assert_eq!(super::convert_event_lead("3", false), "Marked=3");
+        // Already in target form passes through.
+        assert_eq!(super::convert_event_lead("5", true), "5");
+        assert_eq!(super::convert_event_lead("Marked=2", false), "Marked=2");
     }
 
     #[test]
