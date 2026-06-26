@@ -268,6 +268,10 @@ What the parser understands and preserves on round-trip:
   language (`m`/`n`/`l`/`b`/`s`/`p`/`c`) is parsed via
   `oxideav_ass::parse_drawing(s, scale_exp)` into an
   `oxideav_core::Path`, ready to feed `oxideav-raster`'s clip stack.
+  Per the drawing-command spec the `m` (move) command auto-closes an
+  open shape before starting the next one, while `n` (move, no closing)
+  leaves the current shape open — so two adjacent `m`-separated subpaths
+  each fill as their own closed contour.
 - **Animated rasterisation** (`render` cargo feature, default-on) —
   `oxideav_ass::AnimatedRenderedDecoder` wraps another ASS subtitle
   decoder and produces RGBA `Frame::Video`s sampled at a

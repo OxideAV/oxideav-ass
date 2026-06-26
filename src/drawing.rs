@@ -40,6 +40,13 @@ pub fn parse_drawing(s: &str, scale_exp: u32) -> Path {
     let mut i = 0;
     let mut cur = Point::new(0.0, 0.0);
     let mut last_cmd: Option<char> = None;
+    // Whether the current subpath has had geometry drawn into it since the
+    // last `move_to` / `close`. The `m` command auto-closes an open shape
+    // before starting a new one (per the drawing-command spec: *"If you
+    // have an unclosed shape, it will automatically be closed"*); the `n`
+    // command moves without closing. Tracking this lets `m` emit the
+    // implied `close()` while `n` does not.
+    let mut subpath_open = false;
     while i < tokens.len() {
         let head = tokens[i];
         let mut bytes = head.bytes();
@@ -57,10 +64,16 @@ pub fn parse_drawing(s: &str, scale_exp: u32) -> Path {
             match cmd {
                 'm' | 'n' => {
                     if let Some((p, ni)) = read_point(&tokens, i, scale) {
+                        // `m` auto-closes an open shape before moving; `n`
+                        // leaves it open.
+                        if cmd == 'm' && subpath_open {
+                            path.close();
+                        }
                         path.move_to(p);
                         cur = p;
                         i = ni;
                         last_cmd = Some(cmd);
+                        subpath_open = false;
                     }
                 }
                 'l' => {
@@ -68,6 +81,7 @@ pub fn parse_drawing(s: &str, scale_exp: u32) -> Path {
                         path.line_to(p);
                         cur = p;
                         i = ni;
+                        subpath_open = true;
                     }
                     last_cmd = Some('l');
                 }
@@ -76,6 +90,7 @@ pub fn parse_drawing(s: &str, scale_exp: u32) -> Path {
                         path.cubic_to(p1, p2, p3);
                         cur = p3;
                         i = ni;
+                        subpath_open = true;
                     }
                     last_cmd = Some('b');
                 }
@@ -89,6 +104,7 @@ pub fn parse_drawing(s: &str, scale_exp: u32) -> Path {
                         path.cubic_to(p1, p2, p3);
                         cur = p3;
                         i = ni;
+                        subpath_open = true;
                     }
                     last_cmd = Some('s');
                 }
@@ -97,12 +113,14 @@ pub fn parse_drawing(s: &str, scale_exp: u32) -> Path {
                         path.line_to(p);
                         cur = p;
                         i = ni;
+                        subpath_open = true;
                     }
                     last_cmd = Some('p');
                 }
                 'c' => {
                     path.close();
                     last_cmd = Some('c');
+                    subpath_open = false;
                 }
                 _ => {
                     // Skip unknown command and any contiguous numeric
@@ -133,6 +151,7 @@ pub fn parse_drawing(s: &str, scale_exp: u32) -> Path {
                         }
                         cur = p;
                         i = ni;
+                        subpath_open = true;
                     } else {
                         i += 1;
                     }
@@ -142,6 +161,7 @@ pub fn parse_drawing(s: &str, scale_exp: u32) -> Path {
                         path.cubic_to(p1, p2, p3);
                         cur = p3;
                         i = ni;
+                        subpath_open = true;
                     } else {
                         i += 1;
                     }
@@ -247,6 +267,65 @@ mod tests {
         assert!(matches!(p.commands[0], PathCommand::MoveTo(_)));
         assert!(matches!(p.commands[1], PathCommand::LineTo(_)));
         assert!(matches!(p.commands[2], PathCommand::LineTo(_)));
+    }
+
+    #[test]
+    fn m_auto_closes_previous_open_shape() {
+        // Two triangles separated by a second `m`. The `m` before the
+        // second triangle must auto-close the first open shape.
+        let p = parse_drawing("m 0 0 l 10 0 10 10 m 20 20 l 30 20 30 30", 1);
+        let closes = p
+            .commands
+            .iter()
+            .filter(|c| matches!(c, PathCommand::Close))
+            .count();
+        // One implicit close before the second `m`. (The trailing shape
+        // is left open — only `m` / `c` close, and there is no second
+        // `m` after it.)
+        assert_eq!(closes, 1);
+        // The close must sit immediately before the second MoveTo.
+        let move_idxs: Vec<usize> = p
+            .commands
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| matches!(c, PathCommand::MoveTo(_)).then_some(i))
+            .collect();
+        assert_eq!(move_idxs.len(), 2);
+        let second_move = move_idxs[1];
+        assert!(matches!(p.commands[second_move - 1], PathCommand::Close));
+    }
+
+    #[test]
+    fn n_moves_without_closing() {
+        // `n` between two line runs must NOT emit a close.
+        let p = parse_drawing("m 0 0 l 10 0 10 10 n 20 20 l 30 20 30 30", 1);
+        let closes = p
+            .commands
+            .iter()
+            .filter(|c| matches!(c, PathCommand::Close))
+            .count();
+        assert_eq!(closes, 0, "n must not auto-close the prior shape");
+    }
+
+    #[test]
+    fn leading_m_does_not_emit_spurious_close() {
+        // The very first `m` has no open shape to close.
+        let p = parse_drawing("m 0 0 l 10 0 10 10", 1);
+        assert!(!matches!(p.commands[0], PathCommand::Close));
+        assert!(matches!(p.commands[0], PathCommand::MoveTo(_)));
+    }
+
+    #[test]
+    fn explicit_c_then_m_does_not_double_close() {
+        // An explicit `c` already closed the shape; the following `m`
+        // must not emit a second redundant close.
+        let p = parse_drawing("m 0 0 l 10 0 10 10 c m 20 20 l 30 20 30 30", 1);
+        let closes = p
+            .commands
+            .iter()
+            .filter(|c| matches!(c, PathCommand::Close))
+            .count();
+        assert_eq!(closes, 1, "explicit c then m must not double-close");
     }
 
     #[test]

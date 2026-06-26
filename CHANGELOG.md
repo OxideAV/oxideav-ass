@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- drawing parser: the `m` command now auto-closes an open shape before
+  moving (per the drawing-command spec), while `n` still moves without
+  closing — so two adjacent `m`-separated subpaths fill independently
+  with the correct contour closure
 - per-event style resolution on the structured model:
   `AssScript::style_by_name` (case-sensitive lookup) and
   `resolved_style_for(event) -> ResolvedStyle`, applying the spec's
