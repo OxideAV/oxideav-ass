@@ -95,20 +95,38 @@ pub fn parse_drawing(s: &str, scale_exp: u32) -> Path {
                     last_cmd = Some('b');
                 }
                 's' => {
-                    // Extended cubic spline — at minimum three control
-                    // points then any number of additional points (each
-                    // forms another cubic with implicit smoothness).
-                    // We approximate by chaining cubics on consecutive
-                    // triplets; visually adequate for clip masks.
-                    while let Some((p1, p2, p3, ni)) = read_three_points(&tokens, i, scale) {
-                        path.cubic_to(p1, p2, p3);
-                        cur = p3;
+                    // Uniform cubic B-spline. The spec: `s` takes at
+                    // least three coordinate pairs; `p` extends the
+                    // b-spline; `c` closes it. The b-spline's control
+                    // polygon is the current cursor followed by every
+                    // `s`/`p` point. We gather the whole run here
+                    // (consuming any contiguous `p` continuations) and
+                    // convert each interior span to a Bézier via the
+                    // standard B-spline → Bézier basis.
+                    let mut ctrl = vec![cur];
+                    while let Some((p, ni)) = read_point(&tokens, i, scale) {
+                        ctrl.push(p);
                         i = ni;
+                    }
+                    // Absorb following `p` extension commands.
+                    while i < tokens.len() && tokens[i] == "p" {
+                        i += 1;
+                        while let Some((p, ni)) = read_point(&tokens, i, scale) {
+                            ctrl.push(p);
+                            i = ni;
+                        }
+                    }
+                    if let Some(end) = emit_bspline(&mut path, &ctrl) {
+                        cur = end;
                         subpath_open = true;
                     }
                     last_cmd = Some('s');
                 }
                 'p' => {
+                    // A bare `p` with no preceding `s` is degenerate; the
+                    // spec only defines `p` as a b-spline extension. Treat
+                    // the points as line segments so they still round-trip
+                    // visually rather than vanishing.
                     while let Some((p, ni)) = read_point(&tokens, i, scale) {
                         path.line_to(p);
                         cur = p;
@@ -156,7 +174,7 @@ pub fn parse_drawing(s: &str, scale_exp: u32) -> Path {
                         i += 1;
                     }
                 }
-                Some('b') | Some('s') => {
+                Some('b') => {
                     if let Some((p1, p2, p3, ni)) = read_three_points(&tokens, i, scale) {
                         path.cubic_to(p1, p2, p3);
                         cur = p3;
@@ -172,6 +190,51 @@ pub fn parse_drawing(s: &str, scale_exp: u32) -> Path {
     }
     let _ = cur;
     path
+}
+
+/// Emit a uniform cubic B-spline through control polygon `ctrl` (the
+/// current cursor followed by the `s` / `p` points) as a chain of Bézier
+/// segments, returning the curve's end point (or `None` when there are
+/// too few control points to form a segment).
+///
+/// For four consecutive control points `P0..P3` the open uniform cubic
+/// B-spline segment is the cubic Bézier with control points (the standard
+/// B-spline → Bézier basis, all weights summing to 1):
+///
+/// * `B0 = (P0 + 4·P1 + P2) / 6`
+/// * `B1 = (4·P1 + 2·P2) / 6`
+/// * `B2 = (2·P1 + 4·P2) / 6`
+/// * `B3 = (P1 + 4·P2 + P3) / 6`
+///
+/// Consecutive segments share an endpoint (`C0`-continuous), so the chain
+/// is laid down with a single `line_to(B0)` to reach the spline start
+/// (the cursor is generally off the curve) followed by one `cubic_to`
+/// per interior span.
+fn emit_bspline(path: &mut Path, ctrl: &[Point]) -> Option<Point> {
+    if ctrl.len() < 4 {
+        return None;
+    }
+    let bez = |a: Point, wa: f32, b: Point, wb: f32, c: Point, wc: f32| {
+        Point::new(
+            (a.x * wa + b.x * wb + c.x * wc) / 6.0,
+            (a.y * wa + b.y * wb + c.y * wc) / 6.0,
+        )
+    };
+    let mut end = None;
+    for w in ctrl.windows(4) {
+        let (p0, p1, p2, p3) = (w[0], w[1], w[2], w[3]);
+        let b0 = bez(p0, 1.0, p1, 4.0, p2, 1.0);
+        let b1 = bez(p1, 4.0, p2, 2.0, p2, 0.0); // (4·P1 + 2·P2)/6
+        let b2 = bez(p1, 2.0, p2, 4.0, p2, 0.0); // (2·P1 + 4·P2)/6
+        let b3 = bez(p1, 1.0, p2, 4.0, p3, 1.0);
+        if end.is_none() {
+            // Reach the spline start before the first cubic.
+            path.line_to(b0);
+        }
+        path.cubic_to(b1, b2, b3);
+        end = Some(b3);
+    }
+    end
 }
 
 fn read_point(tokens: &[&str], i: usize, scale: f32) -> Option<(Point, usize)> {
@@ -326,6 +389,68 @@ mod tests {
             .filter(|c| matches!(c, PathCommand::Close))
             .count();
         assert_eq!(closes, 1, "explicit c then m must not double-close");
+    }
+
+    #[test]
+    fn s_spline_uses_bspline_basis() {
+        // Cursor at (0,0); s 60 0 60 60 0 60. Control polygon is
+        // P0=(0,0) P1=(60,0) P2=(60,60) P3=(0,60) → one Bézier segment.
+        let p = parse_drawing("m 0 0 s 60 0 60 60 0 60", 1);
+        // Commands: MoveTo(0,0), LineTo(B0), CubicCurveTo(B1,B2,B3).
+        assert!(matches!(p.commands[0], PathCommand::MoveTo(_)));
+        let b0 = match p.commands[1] {
+            PathCommand::LineTo(pt) => pt,
+            _ => panic!("expected LineTo to the spline start"),
+        };
+        // B0 = (P0 + 4P1 + P2)/6 = ((0+240+60)/6, (0+0+60)/6) = (50, 10).
+        assert!((b0.x - 50.0).abs() < 1e-3, "b0.x = {}", b0.x);
+        assert!((b0.y - 10.0).abs() < 1e-3, "b0.y = {}", b0.y);
+        match p.commands[2] {
+            PathCommand::CubicCurveTo { c1, c2, end } => {
+                // B1 = (4P1 + 2P2)/6 = ((240+120)/6,(0+120)/6) = (60, 20).
+                assert!((c1.x - 60.0).abs() < 1e-3);
+                assert!((c1.y - 20.0).abs() < 1e-3);
+                // B2 = (2P1 + 4P2)/6 = ((120+240)/6,(0+240)/6) = (60, 40).
+                assert!((c2.x - 60.0).abs() < 1e-3);
+                assert!((c2.y - 40.0).abs() < 1e-3);
+                // B3 = (P1 + 4P2 + P3)/6 = ((60+240+0)/6,(0+240+60)/6)
+                //    = (50, 50).
+                assert!((end.x - 50.0).abs() < 1e-3, "end.x = {}", end.x);
+                assert!((end.y - 50.0).abs() < 1e-3, "end.y = {}", end.y);
+            }
+            _ => panic!("expected a cubic for the spline segment"),
+        }
+    }
+
+    #[test]
+    fn s_then_p_extends_the_spline() {
+        // `s` with three points then `p` with one more → five control
+        // points (incl. cursor) → two Bézier segments.
+        let p = parse_drawing("m 0 0 s 30 0 30 30 0 30 p 0 0", 1);
+        let cubics = p
+            .commands
+            .iter()
+            .filter(|c| matches!(c, PathCommand::CubicCurveTo { .. }))
+            .count();
+        assert_eq!(cubics, 2, "two interior spans → two cubics");
+        // Exactly one LineTo precedes the cubic chain (the spline start).
+        let lines = p
+            .commands
+            .iter()
+            .filter(|c| matches!(c, PathCommand::LineTo(_)))
+            .count();
+        assert_eq!(lines, 1);
+    }
+
+    #[test]
+    fn s_with_too_few_points_emits_nothing() {
+        // `s` with only one point pair → control polygon of 2 (incl.
+        // cursor) → no segment.
+        let p = parse_drawing("m 0 0 s 10 10", 1);
+        assert!(!p
+            .commands
+            .iter()
+            .any(|c| matches!(c, PathCommand::CubicCurveTo { .. })));
     }
 
     #[test]

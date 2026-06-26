@@ -271,7 +271,11 @@ What the parser understands and preserves on round-trip:
   Per the drawing-command spec the `m` (move) command auto-closes an
   open shape before starting the next one, while `n` (move, no closing)
   leaves the current shape open — so two adjacent `m`-separated subpaths
-  each fill as their own closed contour.
+  each fill as their own closed contour. The `s` / `p` / `c` uniform
+  cubic B-spline (the cursor plus every `s` / `p` point form the control
+  polygon) is converted through the standard B-spline → Bézier basis, so
+  spline outlines follow the spec curve rather than a chained-cubic
+  approximation.
 - **Animated rasterisation** (`render` cargo feature, default-on) —
   `oxideav_ass::AnimatedRenderedDecoder` wraps another ASS subtitle
   decoder and produces RGBA `Frame::Video`s sampled at a

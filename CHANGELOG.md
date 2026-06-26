@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moving (per the drawing-command spec), while `n` still moves without
   closing — so two adjacent `m`-separated subpaths fill independently
   with the correct contour closure
+- drawing parser: the `s` / `p` / `c` uniform cubic B-spline is now
+  converted through the proper B-spline → Bézier basis (cursor + every
+  `s`/`p` point form the control polygon) instead of the previous
+  chain-of-cubics approximation, so spline outlines match the spec
+  curve; `c` closes the spline
 - per-event style resolution on the structured model:
   `AssScript::style_by_name` (case-sensitive lookup) and
   `resolved_style_for(event) -> ResolvedStyle`, applying the spec's
