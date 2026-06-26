@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `collision` module: typed resolver for the `[Script Info]`
+  `Collisions` reposition policy. `resolve_layout(boxes, geometry,
+  policy)` places overlapping bottom-anchored lines vertically per the
+  `Normal` (stack up from the bottom margin, reuse a freed slot) and
+  `Reverse` (latest line at the bottom, earlier lines pushed up to read
+  top-down) policies, clamping at the top margin rather than drawing
+  off-canvas
 - complete the structured-model `StyleDef` typed-accessor set:
   `alignment_typed` (numpad / legacy-SSA-bit), `transform_typed`
   (ScaleX / ScaleY / Spacing / Angle), `margins_typed`,
