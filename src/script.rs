@@ -548,6 +548,85 @@ impl AssScript {
             .flatten()
             .collect()
     }
+
+    /// Look up a style row by exact (case-sensitive) name.
+    ///
+    /// Per the SSA v4.x spec a style name is *"Case sensitive"*. Returns
+    /// the first matching [`StyleDef`] across all style tables in source
+    /// order, or `None` when no row carries that name.
+    pub fn style_by_name(&self, name: &str) -> Option<&StyleDef> {
+        self.styles().into_iter().find(|s| s.name == name)
+    }
+
+    /// Resolve the effective style for an event, applying the spec's
+    /// name-fallback and per-event margin-override rules.
+    ///
+    /// Resolution follows the SSA v4.x spec:
+    ///
+    /// * The event's `Style` column names a style row. An empty column,
+    ///   the literal `Default`, or a name that matches no row all fall
+    ///   back to the script's own `Default` style (the spec's *"`*Default`
+    ///   style will be substituted"* rule). If the script has no
+    ///   `Default` row either, the resolver synthesises a default
+    ///   [`StyleDef`] so the result is always defined.
+    /// * Each per-event `MarginL` / `MarginR` / `MarginV` override
+    ///   supersedes the matching style margin *unless* it is the
+    ///   all-zeroes shorthand, in which case the style's margin is kept
+    ///   (the spec: *"All zeroes means the default margins defined by the
+    ///   style are used"*).
+    ///
+    /// The returned [`ResolvedStyle`] borrows the chosen base style and
+    /// carries the three resolved margins as concrete pixel values
+    /// (falling back to `0` when the style margin column is itself empty
+    /// / non-numeric — the spec's neutral default).
+    pub fn resolved_style_for<'a>(&'a self, event: &Event) -> ResolvedStyle<'a> {
+        let name = event.style.trim();
+        let base = if name.is_empty() || name.eq_ignore_ascii_case("Default") {
+            self.style_by_name("Default")
+        } else {
+            self.style_by_name(name)
+                .or_else(|| self.style_by_name("Default"))
+        };
+        let base = base.unwrap_or(&DEFAULT_STYLE);
+
+        let style_margin = |raw: &str| raw.trim().parse::<u32>().unwrap_or(0);
+        let resolve =
+            |ov: MarginOverride, style_raw: &str| ov.resolve_with_style(style_margin(style_raw));
+        let (ml, mr, mv) = event.margins_typed();
+        ResolvedStyle {
+            base,
+            margin_l: resolve(ml, &base.margin_l),
+            margin_r: resolve(mr, &base.margin_r),
+            margin_v: resolve(mv, &base.margin_v),
+        }
+    }
+}
+
+/// The synthesised fallback style, used when an event names no style and
+/// the script carries no `Default` row. All columns hold their neutral
+/// defaults; the `name` is `Default`.
+static DEFAULT_STYLE: std::sync::LazyLock<StyleDef> = std::sync::LazyLock::new(|| StyleDef {
+    name: "Default".to_string(),
+    ..StyleDef::default()
+});
+
+/// An event's effective style: the resolved base [`StyleDef`] plus the
+/// three margins after the per-event override / style-fallback chain.
+///
+/// Produced by [`AssScript::resolved_style_for`]. The `base` reference
+/// points at the chosen style row (or the synthesised default); the
+/// `margin_*` fields are concrete pixel values with the spec's all-zeroes
+/// fallback already applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedStyle<'a> {
+    /// The chosen base style row.
+    pub base: &'a StyleDef,
+    /// Effective left margin in pixels.
+    pub margin_l: u32,
+    /// Effective right margin in pixels.
+    pub margin_r: u32,
+    /// Effective bottom (vertical) margin in pixels.
+    pub margin_v: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -1741,6 +1820,79 @@ Dialogue: Marked=0,0:00:01.00,0:00:02.00,Def,,0,0,0,,hi\n";
         // Already in target form passes through.
         assert_eq!(super::convert_event_lead("5", true), "5");
         assert_eq!(super::convert_event_lead("Marked=2", false), "Marked=2");
+    }
+
+    #[test]
+    fn style_by_name_is_case_sensitive() {
+        let s = parse_script(ASS.as_bytes());
+        assert!(s.style_by_name("Title").is_some());
+        assert!(s.style_by_name("Default").is_some());
+        // Case-sensitive per the spec.
+        assert!(s.style_by_name("title").is_none());
+        assert!(s.style_by_name("Missing").is_none());
+    }
+
+    #[test]
+    fn resolved_style_applies_margin_override_chain() {
+        // Build a script with a style carrying margins 30/30/40 and two
+        // events: one with no margin override, one overriding MarginL.
+        let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[V4+ Styles]\n\
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+Style: Box,Arial,48,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,30,35,40,1\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:02.00,Box,,0,0,0,,uses style margins\n\
+Dialogue: 0,0:00:02.00,0:00:03.00,Box,,99,0,0,,overrides MarginL\n";
+        let s = parse_script(src.as_bytes());
+        let events = s.events();
+
+        // Event 0: all-zero overrides → keep the style margins.
+        let r0 = s.resolved_style_for(events[0]);
+        assert_eq!(r0.base.name, "Box");
+        assert_eq!((r0.margin_l, r0.margin_r, r0.margin_v), (30, 35, 40));
+
+        // Event 1: explicit MarginL=99 supersedes; the rest stay.
+        let r1 = s.resolved_style_for(events[1]);
+        assert_eq!((r1.margin_l, r1.margin_r, r1.margin_v), (99, 35, 40));
+    }
+
+    #[test]
+    fn resolved_style_falls_back_to_default_then_synthetic() {
+        // A script with a Default style; an event naming a missing style
+        // falls back to Default. An empty style column also uses Default.
+        let src = "[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[V4+ Styles]\n\
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+Style: Default,Arial,48,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:02.00,NoSuchStyle,,0,0,0,,missing style\n\
+Dialogue: 0,0:00:02.00,0:00:03.00,,,0,0,0,,empty style column\n";
+        let s = parse_script(src.as_bytes());
+        let events = s.events();
+        // Missing style name → Default row.
+        assert_eq!(s.resolved_style_for(events[0]).base.name, "Default");
+        assert_eq!(s.resolved_style_for(events[0]).margin_v, 10);
+        // Empty column → Default row.
+        assert_eq!(s.resolved_style_for(events[1]).base.name, "Default");
+
+        // With no Default row at all, the resolver synthesises one.
+        let src2 = "[Script Info]\nScriptType: v4.00+\n\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:01.00,0:00:02.00,Ghost,,0,0,0,,no styles section\n";
+        let s2 = parse_script(src2.as_bytes());
+        let ev = s2.events();
+        let r = s2.resolved_style_for(ev[0]);
+        assert_eq!(r.base.name, "Default");
+        assert_eq!((r.margin_l, r.margin_r, r.margin_v), (0, 0, 0));
     }
 
     #[test]

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- per-event style resolution on the structured model:
+  `AssScript::style_by_name` (case-sensitive lookup) and
+  `resolved_style_for(event) -> ResolvedStyle`, applying the spec's
+  `*Default`-fallback rule (empty / `Default` / unknown style name) and
+  the per-event margin-override chain (an all-zeroes `MarginL`/`R`/`V`
+  keeps the style margin; a non-zero value supersedes it); a synthetic
+  `Default` style backstops a script with no `Default` row
 - SSA↔ASS dialect conversion on the structured model:
   `AssScript::to_ass()` / `to_ssa()` / `to_dialect(Dialect)` rewrite the
   `Format:` column set, the `[V4+ Styles]` vs `[V4 Styles]` header, the
