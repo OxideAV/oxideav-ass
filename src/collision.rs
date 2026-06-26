@@ -57,6 +57,44 @@ impl CollisionBox {
     pub fn overlaps(&self, other: &CollisionBox) -> bool {
         self.start_us < other.end_us && other.start_us < self.end_us
     }
+
+    /// Build a [`CollisionBox`] from a shared-IR [`oxideav_core::SubtitleCue`]
+    /// and a measured box height in canvas pixels.
+    ///
+    /// The cue's `start_us` / `end_us` carry the timing; `height_px` is
+    /// supplied by the caller because measuring a line's rendered height
+    /// is a renderer concern (it depends on the font + the post-wrap row
+    /// count) outside the scope of the pure layout resolver.
+    #[inline]
+    pub fn from_cue(cue: &oxideav_core::SubtitleCue, height_px: u32) -> Self {
+        CollisionBox {
+            start_us: cue.start_us,
+            end_us: cue.end_us,
+            height_px,
+        }
+    }
+}
+
+/// Resolve the vertical layout of a slice of [`oxideav_core::SubtitleCue`]s
+/// that all share a uniform `line_height_px`.
+///
+/// A convenience over [`resolve_layout`] for the common case where every
+/// cue is a single rendered line of the same height: builds one
+/// [`CollisionBox`] per cue via [`CollisionBox::from_cue`] and returns the
+/// resolved top-left Y of each cue's box in the same order. For cues of
+/// differing heights (multi-row lines), build the [`CollisionBox`]es with
+/// per-cue heights and call [`resolve_layout`] directly.
+pub fn resolve_cue_layout(
+    cues: &[oxideav_core::SubtitleCue],
+    line_height_px: u32,
+    geometry: CanvasGeometry,
+    policy: Collisions,
+) -> Vec<u32> {
+    let boxes: Vec<CollisionBox> = cues
+        .iter()
+        .map(|c| CollisionBox::from_cue(c, line_height_px))
+        .collect();
+    resolve_layout(&boxes, geometry, policy)
 }
 
 /// The geometry the resolver places lines into.
@@ -361,6 +399,25 @@ mod tests {
     fn empty_input_yields_empty_output() {
         assert!(resolve_layout(&[], GEO, Collisions::Normal).is_empty());
         assert!(resolve_layout(&[], GEO, Collisions::Reverse).is_empty());
+    }
+
+    #[test]
+    fn cue_layout_bridge_matches_manual_boxes() {
+        let cue = |start: i64, end: i64| oxideav_core::SubtitleCue {
+            start_us: start,
+            end_us: end,
+            style_ref: None,
+            positioning: None,
+            segments: Vec::new(),
+        };
+        let cues = [cue(0, 200_000), cue(100_000, 300_000)];
+        // Two overlapping single-line cues of height 30, Normal policy:
+        // the same result as the manual-box stack test.
+        let got = resolve_cue_layout(&cues, 30, GEO, Collisions::Normal);
+        assert_eq!(got, vec![430, 400]);
+        // from_cue carries the cue timing.
+        let cb = CollisionBox::from_cue(&cues[0], 30);
+        assert_eq!((cb.start_us, cb.end_us, cb.height_px), (0, 200_000, 30));
     }
 
     #[test]

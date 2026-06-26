@@ -44,7 +44,7 @@ pub use animate::{
     KaraokeSpan, RenderState,
 };
 pub use attachment::{parse_attachments, Attachment, AttachmentKind};
-pub use collision::{resolve_layout, CanvasGeometry, CollisionBox};
+pub use collision::{resolve_cue_layout, resolve_layout, CanvasGeometry, CollisionBox};
 pub use dialogue_layer::{parse_layer_field, LayerOverride};
 pub use dialogue_margin::{parse_margin_field, MarginOverride};
 pub use dialogue_name::{parse_name_field, NameOverride};

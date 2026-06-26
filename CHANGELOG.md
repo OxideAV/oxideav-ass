@@ -38,7 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Normal` (stack up from the bottom margin, reuse a freed slot) and
   `Reverse` (latest line at the bottom, earlier lines pushed up to read
   top-down) policies, clamping at the top margin rather than drawing
-  off-canvas
+  off-canvas. `CollisionBox::from_cue` + `resolve_cue_layout` bridge the
+  resolver directly to a slice of shared-IR `SubtitleCue`s
 - complete the structured-model `StyleDef` typed-accessor set:
   `alignment_typed` (numpad / legacy-SSA-bit), `transform_typed`
   (ScaleX / ScaleY / Spacing / Angle), `margins_typed`,
