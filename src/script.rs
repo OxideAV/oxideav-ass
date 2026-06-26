@@ -218,6 +218,120 @@ impl StyleDef {
     pub fn encoding_typed(&self) -> StyleEncoding {
         parse_encoding_field(&self.encoding)
     }
+
+    /// Typed [`StyleAlignment`](crate::style_alignment::StyleAlignment)
+    /// for the `Alignment` column.
+    ///
+    /// `is_ssa` selects the numbering scheme: pass `true` for a legacy
+    /// `[V4 Styles]` table (the bit scheme — `1`/`2`/`3` = L/C/R,
+    /// `+4` toptitle, `+8` midtitle) and `false` for an ASS
+    /// `[V4+ Styles]` table (the numpad `1..=9` scheme). The caller
+    /// reads the owning [`StyleTable::ass`] flag and passes its negation
+    /// (`!table.ass`). Both schemes normalise to the same
+    /// [`StyleAlignment`](crate::style_alignment::StyleAlignment), so a
+    /// renderer reasons about one anchor model regardless of dialect.
+    pub fn alignment_typed(&self, is_ssa: bool) -> crate::style_alignment::StyleAlignment {
+        crate::style_alignment::parse_alignment_field(&self.alignment, is_ssa)
+    }
+
+    /// Typed [`StyleTransform`](crate::style_transform::StyleTransform)
+    /// lifting the `ScaleX` / `ScaleY` / `Spacing` / `Angle` columns at
+    /// once. These are the style-level baselines the per-segment
+    /// `\fscx` / `\fscy` / `\fsp` / `\frz` override tags supersede.
+    pub fn transform_typed(&self) -> crate::style_transform::StyleTransform {
+        crate::style_transform::parse_style_transform(
+            &self.scale_x,
+            &self.scale_y,
+            &self.spacing,
+            &self.angle,
+        )
+    }
+
+    /// Typed per-style margins `(MarginL, MarginR, MarginV)`, each a
+    /// [`MarginOverride`](crate::dialogue_margin::MarginOverride). A
+    /// per-event margin column supersedes the matching style margin when
+    /// present; this accessor surfaces the style-level baseline.
+    pub fn margins_typed(
+        &self,
+    ) -> (
+        crate::dialogue_margin::MarginOverride,
+        crate::dialogue_margin::MarginOverride,
+        crate::dialogue_margin::MarginOverride,
+    ) {
+        (
+            crate::dialogue_margin::parse_margin_field(&self.margin_l),
+            crate::dialogue_margin::parse_margin_field(&self.margin_r),
+            crate::dialogue_margin::parse_margin_field(&self.margin_v),
+        )
+    }
+
+    /// `PrimaryColour` decoded to `(r, g, b, a)` with the ASS alpha
+    /// inversion already applied (`a = 255 - wire_alpha`), or `None` when
+    /// the wire token is malformed.
+    pub fn primary_colour_typed(&self) -> Option<(u8, u8, u8, u8)> {
+        crate::parse_ass_color(&self.primary_colour)
+    }
+
+    /// `SecondaryColour` (the SSA karaoke pre-highlight colour) decoded
+    /// to `(r, g, b, a)`, or `None` when malformed.
+    pub fn secondary_colour_typed(&self) -> Option<(u8, u8, u8, u8)> {
+        crate::parse_ass_color(&self.secondary_colour)
+    }
+
+    /// `OutlineColour` (ASS) / `TertiaryColour` (SSA) decoded to
+    /// `(r, g, b, a)`, or `None` when malformed.
+    pub fn outline_colour_typed(&self) -> Option<(u8, u8, u8, u8)> {
+        crate::parse_ass_color(&self.outline_colour)
+    }
+
+    /// `BackColour` (the shadow / opaque-box backdrop colour) decoded to
+    /// `(r, g, b, a)`, or `None` when malformed.
+    pub fn back_colour_typed(&self) -> Option<(u8, u8, u8, u8)> {
+        crate::parse_ass_color(&self.back_colour)
+    }
+
+    /// `true` when the `Bold` column is set. The SSA wire convention is
+    /// `-1` for true / `0` for false; a non-zero weight (e.g. `700`) also
+    /// reads as bold.
+    pub fn bold_typed(&self) -> bool {
+        crate::parse_bool_flag(&self.bold)
+    }
+
+    /// `true` when the `Italic` column is set (SSA `-1` / `0`).
+    pub fn italic_typed(&self) -> bool {
+        crate::parse_bool_flag(&self.italic)
+    }
+
+    /// `true` when the `Underline` column is set (SSA `-1` / `0`).
+    pub fn underline_typed(&self) -> bool {
+        crate::parse_bool_flag(&self.underline)
+    }
+
+    /// `true` when the `StrikeOut` column is set (SSA `-1` / `0`).
+    pub fn strikeout_typed(&self) -> bool {
+        crate::parse_bool_flag(&self.strikeout)
+    }
+
+    /// `Fontsize` parsed to an `f64`, or `None` when the column is empty
+    /// or non-numeric.
+    pub fn fontsize_typed(&self) -> Option<f64> {
+        let t = self.fontsize.trim();
+        t.parse::<f64>().ok().filter(|v| v.is_finite())
+    }
+
+    /// `Outline` (border width) parsed to an `f64`, or `None` when the
+    /// column is empty or non-numeric.
+    pub fn outline_typed(&self) -> Option<f64> {
+        let t = self.outline.trim();
+        t.parse::<f64>().ok().filter(|v| v.is_finite())
+    }
+
+    /// `Shadow` (drop-shadow distance) parsed to an `f64`, or `None` when
+    /// the column is empty or non-numeric.
+    pub fn shadow_typed(&self) -> Option<f64> {
+        let t = self.shadow.trim();
+        t.parse::<f64>().ok().filter(|v| v.is_finite())
+    }
 }
 
 /// An event table: the `Format:` field order plus the decoded rows.
@@ -1109,6 +1223,96 @@ Dialogue: 0,0:00:02.00,0:00:03.00,Default,,0,0,0,,no override here\n";
         assert_eq!(title.bold, "-1");
         // Typed accessor surfaces the BorderStyle.
         assert!(title.border_style_typed().is_opaque_box());
+    }
+
+    #[test]
+    fn style_def_typed_accessors() {
+        use crate::dialogue_margin::MarginOverride;
+        let s = parse_script(ASS.as_bytes());
+        let table = s.style_table().unwrap();
+        let is_ssa = !table.ass;
+        let title = table.styles.iter().find(|s| s.name == "Title").unwrap();
+
+        // Alignment column `8` is top-centre on the ASS numpad scheme.
+        let al = title.alignment_typed(is_ssa);
+        assert_eq!(al.as_numpad(), 8);
+        assert!(!al.is_bottom());
+
+        // ScaleX/Y/Spacing/Angle → 120 / 120 / 2 / 0.
+        let xf = title.transform_typed();
+        assert!((xf.scale_x - 120.0).abs() < 1e-9);
+        assert!((xf.scale_y - 120.0).abs() < 1e-9);
+        assert!((xf.spacing - 2.0).abs() < 1e-9);
+        assert!((xf.angle - 0.0).abs() < 1e-9);
+        assert!(!xf.is_identity());
+
+        // MarginL/R/V → 30 / 30 / 40 pixels.
+        let (ml, mr, mv) = title.margins_typed();
+        assert_eq!(ml, MarginOverride::Pixels(30));
+        assert_eq!(mr, MarginOverride::Pixels(30));
+        assert_eq!(mv, MarginOverride::Pixels(40));
+
+        // PrimaryColour `&H0000D7FF` is opaque (wire alpha `00` → 255)
+        // with BGR bytes `D7 FF 00` → RGB `(255, 215, 0)` (gold).
+        let (r, g, b, a) = title.primary_colour_typed().unwrap();
+        assert_eq!((r, g, b, a), (255, 215, 0, 255));
+
+        // Bold column `-1` is the SSA "true" sentinel; the rest are off.
+        assert!(title.bold_typed());
+        assert!(!title.italic_typed());
+        assert!(!title.underline_typed());
+        assert!(!title.strikeout_typed());
+
+        // Numeric columns.
+        assert_eq!(title.fontsize_typed(), Some(72.0));
+        assert_eq!(title.outline_typed(), Some(4.0));
+        assert_eq!(title.shadow_typed(), Some(0.0));
+        assert_eq!(title.encoding_typed().as_code(), 0);
+    }
+
+    #[test]
+    fn style_def_typed_accessors_total_on_garbage() {
+        // Every typed accessor stays total: an all-garbage row collapses
+        // each column to its documented default rather than panicking.
+        let sd = StyleDef {
+            fontname: "X".into(),
+            fontsize: "junk".into(),
+            primary_colour: "not-a-colour".into(),
+            secondary_colour: String::new(),
+            outline_colour: "&H00".into(),
+            back_colour: "zzz".into(),
+            bold: "junk".into(),
+            italic: "junk".into(),
+            underline: String::new(),
+            strikeout: "  ".into(),
+            scale_x: "junk".into(),
+            scale_y: String::new(),
+            spacing: "NaN".into(),
+            angle: "inf".into(),
+            outline: "junk".into(),
+            shadow: String::new(),
+            alignment: "junk".into(),
+            margin_l: "-5".into(),
+            margin_r: String::new(),
+            margin_v: "junk".into(),
+            encoding: "999".into(),
+            ..StyleDef::default()
+        };
+        // Alignment collapses to bottom-centre (numpad 2).
+        assert_eq!(sd.alignment_typed(false).as_numpad(), 2);
+        // Transform collapses to identity (100/100/0/0).
+        assert!(sd.transform_typed().is_identity());
+        // Colours collapse to None.
+        assert_eq!(sd.primary_colour_typed(), None);
+        assert_eq!(sd.back_colour_typed(), None);
+        // Bool flags off; numerics None.
+        assert!(!sd.bold_typed());
+        assert!(!sd.italic_typed());
+        assert_eq!(sd.fontsize_typed(), None);
+        assert_eq!(sd.outline_typed(), None);
+        assert_eq!(sd.shadow_typed(), None);
+        // Encoding `999` is out of `0..=255` so collapses to ANSI 0.
+        assert_eq!(sd.encoding_typed().as_code(), 0);
     }
 
     #[test]

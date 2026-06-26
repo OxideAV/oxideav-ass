@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- complete the structured-model `StyleDef` typed-accessor set:
+  `alignment_typed` (numpad / legacy-SSA-bit), `transform_typed`
+  (ScaleX / ScaleY / Spacing / Angle), `margins_typed`,
+  `primary` / `secondary` / `outline` / `back_colour_typed`,
+  `bold` / `italic` / `underline` / `strikeout_typed`, and
+  `fontsize` / `outline` / `shadow_typed` — each accessor stays total,
+  collapsing a malformed column to its documented default
 - renderer honours the SSA `\q` wrap mode: the `AnimatedRenderedDecoder`
   now resolves the effective `WrapStyle` per line (per-line `\q<n>`
   override over the new `default_wrap_style` document default) and wraps
