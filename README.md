@@ -1,5 +1,7 @@
 # oxideav-ass
 
+[![CI](https://github.com/OxideAV/oxideav-ass/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-ass/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-ass.svg)](https://crates.io/crates/oxideav-ass) [![docs.rs](https://docs.rs/oxideav-ass/badge.svg)](https://docs.rs/oxideav-ass) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Pure-Rust **ASS / SSA** subtitle codec and container — parser and writer
 for Advanced SubStation Alpha (`.ass`) and SubStation Alpha (`.ssa`)
 text subtitle files. Zero C dependencies.
