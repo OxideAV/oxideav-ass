@@ -1137,6 +1137,58 @@ fn apply_t(
         let from = pre.letter_spacing.unwrap_or(s);
         st.letter_spacing = Some(lerp_f32(from, s, k));
     }
+    // \clip / \iclip rectangle forms ARE animatable inside \t — the
+    // override-tag reference lists both under the animatable set and
+    // notes "only the rectangle versions can be animated". Each corner
+    // ramps linearly on the same accelerated k as every other lerped
+    // field. When the pre-state carries no rect the post rect applies
+    // throughout, mirroring the translate / colour fallback above (the
+    // evaluator has no canvas extent to widen "no clip" into a source
+    // rectangle). Corners stay normalised: lerping two normalised
+    // rects per-corner cannot cross them.
+    if let Some(r) = post.clip_rect {
+        let from = pre.clip_rect.unwrap_or(r);
+        st.clip_rect = Some(ClipRect {
+            x1: lerp_f32(from.x1, r.x1, k),
+            y1: lerp_f32(from.y1, r.y1, k),
+            x2: lerp_f32(from.x2, r.x2, k),
+            y2: lerp_f32(from.y2, r.y2, k),
+        });
+    }
+    if let Some(r) = post.iclip_rect {
+        let from = pre.iclip_rect.unwrap_or(r);
+        st.iclip_rect = Some(ClipRect {
+            x1: lerp_f32(from.x1, r.x1, k),
+            y1: lerp_f32(from.y1, r.y1, k),
+            x2: lerp_f32(from.x2, r.x2, k),
+            y2: lerp_f32(from.y2, r.y2, k),
+        });
+    }
+    // The vector-drawing clip forms are explicitly NOT animatable
+    // ("the vector drawing versions cannot be animated") — a path
+    // string has no interpolation. They snap to the post-state at
+    // t > t1 (k > 0) like the other non-animatable tags below.
+    if post.clip_drawing != pre.clip_drawing {
+        st.clip_drawing = if k > 0.0 {
+            post.clip_drawing.clone()
+        } else {
+            pre.clip_drawing.clone()
+        };
+    }
+    if post.iclip_drawing != pre.iclip_drawing {
+        st.iclip_drawing = if k > 0.0 {
+            post.iclip_drawing.clone()
+        } else {
+            pre.iclip_drawing.clone()
+        };
+    }
+    // \org is a line-level tag (the reference groups it with \pos /
+    // \move / \fad as "define global aspects of the line"); it is not
+    // in the animatable set, so a pivot change inside \t snaps on the
+    // same k > 0 boundary rather than being silently dropped.
+    if post.pivot != pre.pivot {
+        st.pivot = if k > 0.0 { post.pivot } else { pre.pivot };
+    }
     // \q is non-animatable: snap to the post-state value at t >= t1
     // (k > 0), keep pre below.
     if post.wrap_style != pre.wrap_style {
@@ -3963,5 +4015,129 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\i1}it{\\u1}u{\\s1}s\n";
         assert_eq!(st.italic, Some(true));
         assert_eq!(st.underline, Some(true));
         assert_eq!(st.strikeout, Some(true));
+    }
+
+    fn assert_rect_close(r: &ClipRect, want: (f32, f32, f32, f32)) {
+        assert!(
+            (r.x1 - want.0).abs() < 1e-3
+                && (r.y1 - want.1).abs() < 1e-3
+                && (r.x2 - want.2).abs() < 1e-3
+                && (r.y2 - want.3).abs() < 1e-3,
+            "rect {r:?} != {want:?}"
+        );
+    }
+
+    #[test]
+    fn evaluate_t_interpolates_clip_rect() {
+        // {\clip(0,0,100,100)\t(0,1000,\clip(50,50,200,200))}: each
+        // corner ramps linearly from the pre-rect to the post-rect.
+        let mut tags = Vec::new();
+        parse_overrides(
+            "\\clip(0,0,100,100)\\t(0,1000,\\clip(50,50,200,200))",
+            &mut tags,
+        );
+        let anim = CueAnimation { tags };
+        assert_rect_close(
+            &anim.evaluate_at(0, 1000).clip_rect.unwrap(),
+            (0.0, 0.0, 100.0, 100.0),
+        );
+        assert_rect_close(
+            &anim.evaluate_at(500, 1000).clip_rect.unwrap(),
+            (25.0, 25.0, 150.0, 150.0),
+        );
+        assert_rect_close(
+            &anim.evaluate_at(1000, 1000).clip_rect.unwrap(),
+            (50.0, 50.0, 200.0, 200.0),
+        );
+    }
+
+    #[test]
+    fn evaluate_t_clip_rect_honours_accel() {
+        // accel = 2: k = raw^2, so at the midpoint raw = 0.5 → k = 0.25.
+        let mut tags = Vec::new();
+        parse_overrides(
+            "\\clip(0,0,0,0)\\t(0,1000,2,\\clip(100,100,100,100))",
+            &mut tags,
+        );
+        let anim = CueAnimation { tags };
+        assert_rect_close(
+            &anim.evaluate_at(500, 1000).clip_rect.unwrap(),
+            (25.0, 25.0, 25.0, 25.0),
+        );
+    }
+
+    #[test]
+    fn evaluate_t_iclip_rect_interpolates() {
+        let mut tags = Vec::new();
+        parse_overrides(
+            "\\iclip(0,0,100,100)\\t(0,1000,\\iclip(100,100,300,300))",
+            &mut tags,
+        );
+        let anim = CueAnimation { tags };
+        assert_rect_close(
+            &anim.evaluate_at(500, 1000).iclip_rect.unwrap(),
+            (50.0, 50.0, 200.0, 200.0),
+        );
+        // The positive-clip slot stays untouched.
+        assert!(anim.evaluate_at(500, 1000).clip_rect.is_none());
+    }
+
+    #[test]
+    fn evaluate_t_clip_without_pre_applies_throughout() {
+        // No rect before the \t: the evaluator has no canvas extent to
+        // interpolate from, so the post rect holds across the ramp
+        // (mirrors the translate / colour missing-pre fallback).
+        let mut tags = Vec::new();
+        parse_overrides("\\t(200,800,\\clip(10,20,30,40))", &mut tags);
+        let anim = CueAnimation { tags };
+        assert_rect_close(
+            &anim.evaluate_at(0, 1000).clip_rect.unwrap(),
+            (10.0, 20.0, 30.0, 40.0),
+        );
+        assert_rect_close(
+            &anim.evaluate_at(900, 1000).clip_rect.unwrap(),
+            (10.0, 20.0, 30.0, 40.0),
+        );
+    }
+
+    #[test]
+    fn evaluate_t_clip_drawing_snaps_not_lerps() {
+        // Vector-drawing clips cannot be animated per the reference;
+        // they snap to the post state once the ramp starts (k > 0).
+        let mut tags = Vec::new();
+        parse_overrides("\\t(500,1000,\\clip(m 0 0 l 10 0 10 10))", &mut tags);
+        let anim = CueAnimation { tags };
+        assert!(anim.evaluate_at(400, 2000).clip_drawing.is_none());
+        assert_eq!(
+            anim.evaluate_at(600, 2000).clip_drawing.as_deref(),
+            Some("m 0 0 l 10 0 10 10")
+        );
+        assert_eq!(
+            anim.evaluate_at(1500, 2000).clip_drawing.as_deref(),
+            Some("m 0 0 l 10 0 10 10")
+        );
+    }
+
+    #[test]
+    fn evaluate_t_iclip_drawing_snaps() {
+        let mut tags = Vec::new();
+        parse_overrides("\\t(500,1000,\\iclip(m 0 0 l 5 5))", &mut tags);
+        let anim = CueAnimation { tags };
+        assert!(anim.evaluate_at(0, 2000).iclip_drawing.is_none());
+        assert_eq!(
+            anim.evaluate_at(700, 2000).iclip_drawing.as_deref(),
+            Some("m 0 0 l 5 5")
+        );
+    }
+
+    #[test]
+    fn evaluate_t_org_snaps() {
+        // \org is a line-level tag outside the animatable set — inside
+        // \t it snaps at k > 0 instead of being dropped.
+        let mut tags = Vec::new();
+        parse_overrides("\\t(500,1000,\\org(64,32))", &mut tags);
+        let anim = CueAnimation { tags };
+        assert_eq!(anim.evaluate_at(100, 2000).pivot, None);
+        assert_eq!(anim.evaluate_at(750, 2000).pivot, Some((64.0, 32.0)));
     }
 }

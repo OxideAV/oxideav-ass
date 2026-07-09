@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- animate: `\clip` / `\iclip` inside `\t(...)` are no longer dropped.
+  The rectangle forms interpolate per-corner on the accelerated ramp
+  (the override-tag reference lists both as animatable and notes only
+  the rectangle versions animate); the vector-drawing forms and `\org`
+  snap to the post-state at `t > t1` like the other non-animatable
+  tags (`\q` / `\an` / `\fn`)
+
 ### Added
 
 - drawing parser: the `m` command now auto-closes an open shape before
