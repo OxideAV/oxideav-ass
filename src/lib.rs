@@ -387,20 +387,34 @@ pub(crate) fn parse_ass_timestamp(s: &str) -> Option<i64> {
         ),
         _ => return None,
     };
-    // `frac` is centiseconds (2 digits) but be robust to 1-3 digit forms.
-    let cs_str = if frac.len() > 2 { &frac[..2] } else { frac };
-    let cs: u32 = if cs_str.is_empty() {
+    // `frac` is centiseconds (2 digits) but be robust to 1-3 digit
+    // forms. Reject any non-digit byte first — besides being invalid,
+    // slicing at a fixed byte index below could split a multi-byte
+    // character and panic on the char boundary.
+    let cs: u32 = if frac.is_empty() {
         0
     } else {
-        cs_str.parse().ok()?
+        if !frac.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let cs_str = if frac.len() > 2 { &frac[..2] } else { frac };
+        let cs = cs_str.parse::<u32>().ok()?;
+        // Pad to 2 digits if only 1 was given.
+        if frac.len() == 1 {
+            cs * 10
+        } else {
+            cs
+        }
     };
-    // Pad to 2 digits if only 1 was given.
-    let cs = if frac.len() == 1 { cs * 10 } else { cs };
+    // The components parse as full-range u32 (a hostile hour field
+    // like `4294967295` is representable), so the microsecond fold
+    // must saturate rather than overflow i64.
     Some(
-        (h as i64) * 3_600_000_000
-            + (m as i64) * 60_000_000
-            + (sec as i64) * 1_000_000
-            + (cs as i64) * 10_000,
+        (h as i64)
+            .saturating_mul(3_600_000_000)
+            .saturating_add((m as i64) * 60_000_000)
+            .saturating_add((sec as i64) * 1_000_000)
+            .saturating_add((cs as i64) * 10_000),
     )
 }
 
@@ -1134,6 +1148,46 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\b1}Hello{\b0} world
     fn ass_timestamp() {
         let t = parse_ass_timestamp("0:00:01.50").unwrap();
         assert_eq!(t, 1_500_000);
+    }
+
+    #[test]
+    fn ass_timestamp_hostile_inputs_are_total() {
+        // Multi-byte character straddling the 2-byte centisecond cut:
+        // slicing `&frac[..2]` on "1é" split the é and panicked.
+        assert_eq!(parse_ass_timestamp("0:00:05.1é"), None);
+        assert_eq!(parse_ass_timestamp("0:00:05.é"), None);
+        // Non-digit fractions are invalid, not truncated.
+        assert_eq!(parse_ass_timestamp("0:00:05.1x"), None);
+        // Full-range u32 hour field must saturate, not overflow i64
+        // (debug builds panic on the multiply).
+        assert_eq!(parse_ass_timestamp("4294967295:00:00.00"), Some(i64::MAX));
+        // Component overflow past u32 → unparsable → None.
+        assert_eq!(parse_ass_timestamp("99999999999:00:00.00"), None);
+        // Negative / structurally broken forms.
+        assert_eq!(parse_ass_timestamp("-1:00:00.00"), None);
+        assert_eq!(parse_ass_timestamp("::"), None);
+        assert_eq!(parse_ass_timestamp(""), None);
+        assert_eq!(parse_ass_timestamp("1:2:3:4:5"), None);
+        // Degenerate-but-valid forms keep parsing.
+        assert_eq!(parse_ass_timestamp("0:00:05."), Some(5_000_000));
+        assert_eq!(parse_ass_timestamp("0:00:05.1"), Some(5_100_000));
+        assert_eq!(parse_ass_timestamp("0:00:05.123"), Some(5_120_000));
+        assert_eq!(parse_ass_timestamp("59:59"), Some(3_599_000_000));
+    }
+
+    #[test]
+    fn hostile_timestamp_survives_full_parse() {
+        // The same vectors flowing through the event-line path: the
+        // parser falls back to 0 for an unparsable stamp instead of
+        // panicking mid-document.
+        let src = "[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:05.1é,0:00:06.00,Default,,0,0,0,,hi\n\
+Dialogue: 0,4294967295:00:00.00,4294967295:00:01.00,Default,,0,0,0,,huge\n";
+        let track = crate::parse(src.as_bytes()).unwrap();
+        assert_eq!(track.cues.len(), 2);
+        assert_eq!(track.cues[0].start_us, 0);
+        assert_eq!(track.cues[1].start_us, i64::MAX);
     }
 
     #[test]

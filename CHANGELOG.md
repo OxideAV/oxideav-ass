@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- timestamp parser: two panic vectors fixed — a multi-byte character
+  straddling the 2-byte centisecond cut (`0:00:05.1é`) split the
+  character on a byte slice, and a full-range-u32 hour field
+  (`4294967295:00:00.00`) overflowed the i64 microsecond fold in debug
+  builds. Non-digit fractions now reject cleanly and the fold
+  saturates; both vectors are covered end-to-end through `parse`
 - animate: hostile-input hardening on the override evaluator — a
   `\t(\t(\t(…` chain deeper than 8 levels no longer recurses
   unboundedly (stack exhaustion on ~100k nested openers); non-finite
