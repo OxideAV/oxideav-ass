@@ -1,3 +1,13 @@
+//! Delta-minimiser for `examples/hostile_explore.rs` failures.
+//!
+//! Takes a failing input dump and greedily removes byte ranges while
+//! the serialise-fixpoint violation persists, printing the minimal
+//! repro plus its first and second serialisations:
+//!
+//! ```sh
+//! cargo run --release --example hostile_minimize /tmp/oxideav-ass-fuzz-script-N.bin
+//! ```
+
 fn fails(input: &[u8]) -> bool {
     let o1 = oxideav_ass::parse_script(input).serialise();
     let o2 = oxideav_ass::parse_script(&o1).serialise();

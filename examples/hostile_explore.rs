@@ -1,4 +1,19 @@
-// Scratch exploratory fuzz — NOT committed. Collects distinct panics.
+//! Extended hostile-input sweep (release-mode companion of
+//! `tests/hostile.rs`).
+//!
+//! Runs the same xorshift mutation generator over the same seed
+//! document for an arbitrary iteration count, checking parser
+//! totality and the `serialise` re-parse fixpoint, and dumping any
+//! failing input to `/tmp/oxideav-ass-fuzz-*.bin` for
+//! `examples/hostile_minimize.rs`:
+//!
+//! ```sh
+//! cargo run --release --example hostile_explore 5000000
+//! ```
+//!
+//! The in-CI regression net is `tests/hostile.rs` (4000 seeded
+//! inputs); this binary is for deeper local sweeps between rounds.
+
 use std::panic;
 
 struct Rng(u64);
