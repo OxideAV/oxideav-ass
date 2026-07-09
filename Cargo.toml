@@ -38,3 +38,8 @@ oxideav-image-filter = { version = "0.1", optional = true }
 oxideav-core = "0.1"
 oxideav-subtitle = "0.1"
 oxideav-scribe = "0.1"
+criterion = "0.5"
+
+[[bench]]
+name = "evaluate"
+harness = false

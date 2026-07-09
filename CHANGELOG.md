@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- collision resolver: layer-aware and margin-aware placement.
+  `CollisionBox` (now `#[non_exhaustive]`, with `new` /
+  `with_layer` / `with_bottom_margin` builders) carries the event's
+  signed `Layer` — per the spec's Layer field, subtitles on different
+  layer numbers are ignored during collision detection, so `Normal`
+  stacks and `Reverse` runs resolve independently per layer — and an
+  optional per-line `MarginV` bottom-margin override (the spec's
+  all-zeroes-keeps-the-style-default case maps to `None`, falling
+  back to `CanvasGeometry::bottom_margin_px`). A margin-lifted line
+  can leave the default bottom slot free for a later line.
+  `CollisionBox::from_event` bridges a structured-model `Event` row
+  directly (typed Layer + MarginV + timestamps)
+- `benches/evaluate.rs` (criterion): parse_overrides (typical +
+  karaoke blocks), evaluate_at (static + animated), karaoke_spans,
+  full-document parse, and collision resolve — r401 baseline numbers
+  in `BENCHMARKS.md` (worst-case animated sample ~83 ns)
+
 ### Fixed
 
 - structured model: four `serialise` fixpoint violations found by a
