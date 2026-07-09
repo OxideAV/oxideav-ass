@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- structured model: four `serialise` fixpoint violations found by a
+  2M-input deterministic mutation sweep — (1) the phantom final `""`
+  segment of a `\n`-terminated document landed in the last section's
+  body as a real blank line, growing the output by one `\n` per
+  round-trip; (2) a bare `[]` opened an empty-named section that
+  serialised to nothing; (3) a duplicated `Format:` column name
+  (e.g. `Text, Text`) grew event rows on every round-trip; (4) a
+  second `Format:` line mid-table reshaped rows already parsed under
+  the first one. Well-formed `\n`-terminated documents now serialise
+  byte-identical on the first pass
+- parser: `strip_prefix_case` sliced the line at an ASCII prefix
+  length and panicked when the cut landed inside a multi-byte
+  character (`Form<é>at:` style corruption); it now compares bytes
+- new `tests/hostile.rs` suite: targeted regressions for each fix
+  plus a 4000-input deterministic xorshift mutation sweep asserting
+  parser totality and the serialise fixpoint in CI
 - timestamp parser: two panic vectors fixed — a multi-byte character
   straddling the 2-byte centisecond cut (`0:00:05.1é`) split the
   character on a byte slice, and a full-range-u32 hour field

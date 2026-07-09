@@ -1014,12 +1014,26 @@ pub fn parse_script(bytes: &[u8]) -> AssScript {
         }
     }
 
+    // `split('\n')` yields a phantom final `""` segment for a
+    // `\n`-terminated document; that segment used to land in the last
+    // section's body as a real blank line, so each parse -> serialise
+    // round appended one more trailing blank (unbounded growth,
+    // breaking the documented re-parse fixpoint). Strip exactly one
+    // trailing newline: `...\n` and `...` parse identically, and
+    // `serialise` re-emits the canonical terminator. A document that
+    // really ends in a blank line (`...\n\n`) keeps the blank -- only
+    // the final terminator is consumed.
+    let text = text.strip_suffix('\n').unwrap_or(&text);
+
     for raw in text.split('\n') {
         let line = raw.trim_end_matches('\r');
         let trimmed = line.trim();
 
-        // Section header: `[Name]`.
-        if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2 {
+        // Section header: needs a non-empty name — a bare `[]` is not
+        // a header (an empty-named `RawSection` would serialise to
+        // nothing, so the header byte pair could not round-trip); it
+        // falls through as an ordinary body line instead.
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() > 2 {
             flush(&mut acc, &mut sections);
             let name = &trimmed[1..trimmed.len() - 1];
             let lc = name.to_ascii_lowercase();
@@ -1068,7 +1082,15 @@ pub fn parse_script(bytes: &[u8]) -> AssScript {
             }
             Acc::Styles(table) => {
                 if let Some(rest) = strip_descriptor(trimmed, "Format") {
-                    table.format = split_fields(rest);
+                    // Only the first Format line counts (the spec puts
+                    // it first in the section). Letting a later Format
+                    // replace the column set would re-serialise rows
+                    // already parsed under the first set with a
+                    // different column count — unstable under
+                    // re-parse.
+                    if table.format.is_empty() {
+                        table.format = dedupe_fields(split_fields(rest));
+                    }
                 } else if let Some(rest) = strip_descriptor(trimmed, "Style") {
                     if let Some(s) = parse_style_row(rest, &table.format) {
                         table.styles.push(s);
@@ -1080,7 +1102,10 @@ pub fn parse_script(bytes: &[u8]) -> AssScript {
             }
             Acc::Events(table) => {
                 if let Some(rest) = strip_descriptor(trimmed, "Format") {
-                    table.format = split_fields(rest);
+                    // First Format wins — see the styles arm above.
+                    if table.format.is_empty() {
+                        table.format = dedupe_fields(split_fields(rest));
+                    }
                 } else if let Some((desc, rest)) = trimmed.split_once(':') {
                     if let Some(kind) = EventKind::from_descriptor(desc) {
                         if let Some(ev) = parse_event_row(kind, rest.trim_start(), &table.format) {
@@ -1128,6 +1153,28 @@ fn strip_descriptor<'a>(line: &'a str, desc: &str) -> Option<&'a str> {
 /// Split a `Format:` field list on commas, trimming each name.
 fn split_fields(s: &str) -> Vec<String> {
     s.split(',').map(|f| f.trim().to_string()).collect()
+}
+
+/// Drop repeated column names from a `Format:` field list (first
+/// occurrence wins; comparison matches the row mappers' key derivation
+/// — ASCII-lowercased, spaces removed). A duplicated column is
+/// malformed input, and the last-field-takes-the-rest CSV convention
+/// makes a duplicated `Text` column unstable under re-serialisation:
+/// the row emits the text once per column while the parser folds
+/// everything from the first `Text` slot back into one value, so each
+/// round-trip grew the line. Deduping restores the serialise fixpoint.
+fn dedupe_fields(fields: Vec<String>) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::with_capacity(fields.len());
+    let mut out = Vec::with_capacity(fields.len());
+    for f in fields {
+        let key = f.to_ascii_lowercase().replace(' ', "");
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        out.push(f);
+    }
+    out
 }
 
 /// Split a body line into `n` comma-separated columns, leaving the

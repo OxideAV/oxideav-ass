@@ -201,7 +201,11 @@ fn strip_prefix_case<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
     if line.len() < prefix.len() {
         return None;
     }
-    if line[..prefix.len()].eq_ignore_ascii_case(prefix) {
+    // Compare as bytes: slicing the &str at prefix.len() can split a
+    // multi-byte character and panic on the char boundary. `prefix` is
+    // always ASCII, so a case-insensitive byte match means the head is
+    // ASCII too and the cut below lands on a char boundary.
+    if line.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes()) {
         Some(line[prefix.len()..].trim_start())
     } else {
         None
