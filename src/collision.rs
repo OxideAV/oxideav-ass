@@ -39,6 +39,7 @@ use crate::script_info::Collisions;
 /// `height_px` is the line's measured box height in canvas pixels (after
 /// word-wrap, so a two-row line is twice a one-row line).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct CollisionBox {
     /// Line on-screen start, microseconds.
     pub start_us: i64,
@@ -46,6 +47,20 @@ pub struct CollisionBox {
     pub end_us: i64,
     /// Measured box height in canvas pixels.
     pub height_px: u32,
+    /// Signed `Layer` value of the event. The spec's Layer field
+    /// documents that subtitles on different layer numbers are
+    /// ignored during collision detection (higher layers simply draw
+    /// over lower ones), so two boxes only collide when their layers
+    /// are equal. Legacy SSA `Marked=N` events have no layer — use
+    /// `0`, the base layer an absent `Layer` column resolves to.
+    pub layer: i32,
+    /// Per-line bottom-margin override in pixels, from the event's
+    /// `MarginV` column. The spec defines the event `MarginV` as a
+    /// bottom-margin override where an all-zeroes value keeps the
+    /// style's default — map that default to `None` here and the
+    /// resolver falls back to the caller's
+    /// [`CanvasGeometry::bottom_margin_px`].
+    pub bottom_margin_px: Option<u32>,
 }
 
 impl CollisionBox {
@@ -54,8 +69,61 @@ impl CollisionBox {
     /// touch at an instant (one ends exactly when the other starts) do
     /// **not** collide.
     #[inline]
+    /// A box on the base layer (`0`) with no per-line margin
+    /// override — the common case; chain [`Self::with_layer`] /
+    /// [`Self::with_bottom_margin`] for the rest.
+    pub fn new(start_us: i64, end_us: i64, height_px: u32) -> Self {
+        CollisionBox {
+            start_us,
+            end_us,
+            height_px,
+            layer: 0,
+            bottom_margin_px: None,
+        }
+    }
+
+    /// Set the event's `Layer`; boxes on different layers never
+    /// collide.
+    #[inline]
+    pub fn with_layer(mut self, layer: i32) -> Self {
+        self.layer = layer;
+        self
+    }
+
+    /// Set the per-line `MarginV` bottom-margin override in pixels.
+    #[inline]
+    pub fn with_bottom_margin(mut self, margin_px: u32) -> Self {
+        self.bottom_margin_px = Some(margin_px);
+        self
+    }
+
+    /// Build a [`CollisionBox`] from a structured-model
+    /// [`Event`](crate::script::Event) row, lifting the typed `Layer`
+    /// (base layer `0` when absent — legacy SSA `Marked` rows land
+    /// there) and the typed per-event `MarginV` bottom-margin
+    /// override (the spec's all-zeroes-keeps-the-style-default case
+    /// arrives as `None`, falling back to
+    /// [`CanvasGeometry::bottom_margin_px`]).
+    ///
+    /// `height_px` stays caller-supplied for the same reason as in
+    /// [`Self::from_cue`]: measuring a line's rendered height is a
+    /// renderer concern. Timestamps that fail to parse fall back to
+    /// `0`, matching the base parser's behaviour.
+    pub fn from_event(event: &crate::script::Event, height_px: u32) -> Self {
+        let (_, _, margin_v) = event.margins_typed();
+        CollisionBox {
+            start_us: crate::parse_ass_timestamp(&event.start).unwrap_or(0),
+            end_us: crate::parse_ass_timestamp(&event.end).unwrap_or(0),
+            height_px,
+            layer: event.layer_typed().resolve(),
+            bottom_margin_px: margin_v.as_pixels(),
+        }
+    }
+
     pub fn overlaps(&self, other: &CollisionBox) -> bool {
-        self.start_us < other.end_us && other.start_us < self.end_us
+        // Per the spec's Layer field, subtitles with different layer
+        // numbers are ignored during collision detection.
+        self.layer == other.layer && self.start_us < other.end_us && other.start_us < self.end_us
     }
 
     /// Build a [`CollisionBox`] from a shared-IR [`oxideav_core::SubtitleCue`]
@@ -71,6 +139,8 @@ impl CollisionBox {
             start_us: cue.start_us,
             end_us: cue.end_us,
             height_px,
+            layer: 0,
+            bottom_margin_px: None,
         }
     }
 }
@@ -151,10 +221,14 @@ fn ceiling(geometry: CanvasGeometry) -> i64 {
 }
 
 /// Bottom resting baseline (top-left Y of a single line sitting against
-/// the bottom margin) for a box of `height_px`.
+/// the bottom margin) for `b`. A per-line `MarginV` override supersedes
+/// the canvas default, per the spec's "all zeroes means the default
+/// margins defined by the style are used" rule (the zero/default case
+/// arrives here as `None`).
 #[inline]
-fn bottom_rest(geometry: CanvasGeometry, height_px: u32) -> i64 {
-    geometry.height_px as i64 - geometry.bottom_margin_px as i64 - height_px as i64
+fn bottom_rest(geometry: CanvasGeometry, b: &CollisionBox) -> i64 {
+    let margin = b.bottom_margin_px.unwrap_or(geometry.bottom_margin_px);
+    geometry.height_px as i64 - margin as i64 - b.height_px as i64
 }
 
 /// Clamp a top-left Y into `[ceiling, bottom_rest_of_zero_height]`.
@@ -173,7 +247,7 @@ fn resolve_normal(boxes: &[CollisionBox], geometry: CanvasGeometry) -> Vec<u32> 
     let mut out = Vec::with_capacity(boxes.len());
     for b in boxes {
         // Candidate bottom edge starts at the bottom-margin resting spot.
-        let mut top = bottom_rest(geometry, b.height_px);
+        let mut top = bottom_rest(geometry, b);
         // Repeatedly raise above any time-overlapping placed box whose
         // band intersects the candidate band, restarting the scan after
         // each lift (a higher placement may now clash with a different
@@ -204,6 +278,7 @@ fn resolve_normal(boxes: &[CollisionBox], geometry: CanvasGeometry) -> Vec<u32> 
         placed.push(PlacedBox {
             start_us: b.start_us,
             end_us: b.end_us,
+            layer: b.layer,
             top: placed_top,
             bottom: placed_top + b.height_px as i64,
         });
@@ -217,29 +292,45 @@ fn resolve_reverse(boxes: &[CollisionBox], geometry: CanvasGeometry) -> Vec<u32>
     // earlier ones stack above it. We group boxes into maximal time-
     // connected runs, place the *last* box of each run at the bottom
     // margin, then walk backward through the run stacking each earlier
-    // box on top of the one below it.
+    // box on top of the one below it. Boxes on different layers never
+    // collide (spec Layer field), so runs are grouped within each
+    // layer's subsequence independently; event order is preserved
+    // inside a layer.
     let mut out = vec![0u32; boxes.len()];
-    let mut idx = 0usize;
-    while idx < boxes.len() {
-        // Grow a run of indices that are pairwise time-connected with the
-        // run so far (transitive overlap chain in event order).
-        let mut run = vec![idx];
-        let mut run_end = boxes[idx].end_us;
-        let mut j = idx + 1;
-        while j < boxes.len() && boxes[j].start_us < run_end {
-            run.push(j);
-            run_end = run_end.max(boxes[j].end_us);
-            j += 1;
+    let mut layers: Vec<i32> = boxes.iter().map(|b| b.layer).collect();
+    layers.sort_unstable();
+    layers.dedup();
+    for layer in layers {
+        let idxs: Vec<usize> = (0..boxes.len())
+            .filter(|&i| boxes[i].layer == layer)
+            .collect();
+        let mut pos = 0usize;
+        while pos < idxs.len() {
+            // Grow a run of indices that are pairwise time-connected
+            // with the run so far (transitive overlap chain in event
+            // order).
+            let mut run = vec![idxs[pos]];
+            let mut run_end = boxes[idxs[pos]].end_us;
+            let mut j = pos + 1;
+            while j < idxs.len() && boxes[idxs[j]].start_us < run_end {
+                run.push(idxs[j]);
+                run_end = run_end.max(boxes[idxs[j]].end_us);
+                j += 1;
+            }
+            // Bottom slot holds the last (latest-appearing) box,
+            // resting on its own margin (a per-line MarginV override
+            // supersedes the canvas default); walk up from there.
+            let last = *run.last().expect("run is never empty");
+            let bottom_box = &boxes[last];
+            let mut bottom_edge = bottom_rest(geometry, bottom_box) + bottom_box.height_px as i64;
+            for &k in run.iter().rev() {
+                let h = boxes[k].height_px as i64;
+                let top = (bottom_edge - h).max(ceiling(geometry));
+                out[k] = clamp_top(geometry, top);
+                bottom_edge = top;
+            }
+            pos = j;
         }
-        // Bottom slot holds the last (latest-appearing) box; walk up.
-        let mut bottom_edge = geometry.height_px as i64 - geometry.bottom_margin_px as i64;
-        for &k in run.iter().rev() {
-            let h = boxes[k].height_px as i64;
-            let top = (bottom_edge - h).max(ceiling(geometry));
-            out[k] = clamp_top(geometry, top);
-            bottom_edge = top;
-        }
-        idx = j;
     }
     out
 }
@@ -248,13 +339,16 @@ fn resolve_reverse(boxes: &[CollisionBox], geometry: CanvasGeometry) -> Vec<u32>
 struct PlacedBox {
     start_us: i64,
     end_us: i64,
+    layer: i32,
     top: i64,
     bottom: i64,
 }
 
 #[inline]
 fn time_overlap(b: &CollisionBox, p: &PlacedBox) -> bool {
-    b.start_us < p.end_us && p.start_us < b.end_us
+    // Different layers never collide (spec Layer field); the vertical
+    // scan simply ignores boxes on other layers.
+    b.layer == p.layer && b.start_us < p.end_us && p.start_us < b.end_us
 }
 
 #[cfg(test)]
@@ -268,11 +362,7 @@ mod tests {
     };
 
     fn b(start: i64, end: i64, h: u32) -> CollisionBox {
-        CollisionBox {
-            start_us: start,
-            end_us: end,
-            height_px: h,
-        }
+        CollisionBox::new(start, end, h)
     }
 
     #[test]
@@ -428,5 +518,134 @@ mod tests {
         let out = resolve_layout(&[b(0, 300, 60), b(100, 300, 30)], GEO, Collisions::Normal);
         // Tall box bottom: 480 - 20 - 60 = 400. Short box above: 400 - 30 = 370.
         assert_eq!(out, vec![400, 370]);
+    }
+
+    #[test]
+    fn overlaps_requires_same_layer() {
+        // Spec Layer field: subtitles with different layer numbers are
+        // ignored during collision detection.
+        let a = b(0, 300, 30);
+        let c = b(100, 400, 30).with_layer(1);
+        assert!(!a.overlaps(&c));
+        assert!(a.overlaps(&b(100, 400, 30)));
+        assert!(c.overlaps(&b(100, 400, 30).with_layer(1)));
+    }
+
+    #[test]
+    fn normal_different_layers_rest_at_bottom_independently() {
+        // Two time-overlapping lines on different layers both take the
+        // bottom slot -- the higher layer simply draws over the lower.
+        let out = resolve_layout(
+            &[b(0, 300, 30), b(100, 300, 30).with_layer(1)],
+            GEO,
+            Collisions::Normal,
+        );
+        assert_eq!(out, vec![430, 430]);
+    }
+
+    #[test]
+    fn normal_layer_stacks_are_independent() {
+        // Layer 0: two overlapping lines stack. Layer 1: a third
+        // overlapping line ignores both and rests at the bottom.
+        let out = resolve_layout(
+            &[
+                b(0, 300, 30),
+                b(100, 300, 30),
+                b(150, 300, 30).with_layer(1),
+            ],
+            GEO,
+            Collisions::Normal,
+        );
+        assert_eq!(out, vec![430, 400, 430]);
+    }
+
+    #[test]
+    fn reverse_layers_group_runs_independently() {
+        // Layer 0 run: boxes 0 and 2 (they overlap in time); layer 1:
+        // box 1 alone. Reverse puts the latest layer-0 box (index 2)
+        // at the bottom and index 0 above it; the layer-1 box rests
+        // at the bottom of its own empty stack.
+        let out = resolve_layout(
+            &[
+                b(0, 300, 30),
+                b(100, 300, 30).with_layer(1),
+                b(150, 300, 30),
+            ],
+            GEO,
+            Collisions::Reverse,
+        );
+        assert_eq!(out, vec![400, 430, 430]);
+    }
+
+    #[test]
+    fn margin_v_override_lifts_resting_spot() {
+        // Spec event MarginV: a non-zero value overrides the default
+        // bottom margin (all zeroes keeps the default, which arrives
+        // here as None). 480 - 50 - 30 = 400 instead of 430.
+        let out = resolve_layout(
+            &[b(0, 300, 30).with_bottom_margin(50)],
+            GEO,
+            Collisions::Normal,
+        );
+        assert_eq!(out, vec![400]);
+    }
+
+    #[test]
+    fn normal_second_box_can_slot_below_a_margin_lifted_first() {
+        // Box 0 rests high on its 100px margin override (top 350);
+        // box 1 wants the default bottom spot (430) -- the bands don't
+        // intersect, so box 1 keeps the bottom instead of stacking.
+        let out = resolve_layout(
+            &[b(0, 300, 30).with_bottom_margin(100), b(100, 300, 30)],
+            GEO,
+            Collisions::Normal,
+        );
+        assert_eq!(out, vec![350, 430]);
+    }
+
+    #[test]
+    fn reverse_run_rests_on_last_box_margin() {
+        // The bottom (latest) box of a Reverse run rests on its own
+        // margin override; the earlier box stacks on its top edge.
+        let out = resolve_layout(
+            &[b(0, 300, 30), b(100, 300, 30).with_bottom_margin(50)],
+            GEO,
+            Collisions::Reverse,
+        );
+        assert_eq!(out, vec![370, 400]);
+    }
+
+    #[test]
+    fn from_event_lifts_layer_and_margin() {
+        let script = crate::parse_script(
+            b"[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 3,0:00:01.00,0:00:02.00,Default,,0,0,0150,,hi\n\
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0000,,lo\n",
+        );
+        let events = script.events();
+        let bx = CollisionBox::from_event(events[0], 30);
+        assert_eq!(bx.layer, 3);
+        assert_eq!(bx.bottom_margin_px, Some(150));
+        assert_eq!(bx.start_us, 1_000_000);
+        assert_eq!(bx.end_us, 2_000_000);
+        // All-zeroes MarginV keeps the default (None).
+        let bx = CollisionBox::from_event(events[1], 30);
+        assert_eq!(bx.layer, 0);
+        assert_eq!(bx.bottom_margin_px, None);
+    }
+
+    #[test]
+    fn from_cue_defaults_to_base_layer_no_margin() {
+        let cue = oxideav_core::SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            positioning: None,
+            segments: Vec::new(),
+        };
+        let bx = CollisionBox::from_cue(&cue, 30);
+        assert_eq!(bx.layer, 0);
+        assert_eq!(bx.bottom_margin_px, None);
     }
 }
