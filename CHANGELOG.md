@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can leave the default bottom slot free for a later line.
   `CollisionBox::from_event` bridges a structured-model `Event` row
   directly (typed Layer + MarginV + timestamps)
+- `tests/script_mutation.rs`: mutate-then-restore byte-identity on
+  the structured model (edit style / event / info / raw-section
+  fields, restore, serialise == original bytes; a single-field edit
+  touches exactly one output line) and SSA↔ASS dialect fidelity edges
+  (ASS→SSA→ASS byte identity, AlphaLevel + `Marked=` survival, all
+  nine legacy↔numpad alignment mappings)
 - `benches/evaluate.rs` (criterion): parse_overrides (typical +
   karaoke blocks), evaluate_at (static + animated), karaoke_spans,
   full-document parse, and collision resolve — r401 baseline numbers
