@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/OxideAV/oxideav-ass/compare/v0.0.9...v0.0.10) - 2026-07-09
+
+### Fixed
+
+- preserve UTF-8 dialogue text in the segmenter
+
+### Other
+
+- document the hostile-sweep + delta-minimiser tooling
+- style-column fallback (\u/\s/\i) + fix redundant flag-off round-trip loss
+- document collision layer/margin awareness, \t clip animation, hostile suite + benches
+- mutate-then-restore byte-identity + SSA/ASS dialect fidelity edges
+- criterion suite on the tag-evaluation hot path + r401 baseline
+- layer-aware + per-line MarginV-aware placement
+- hostile-input sweep — 4 serialise-fixpoint bugs + a UTF-8 slice panic
+- harden parse_ass_timestamp — UTF-8 frac slice panic + i64 overflow
+- hostile-input hardening — \t depth cap, finite-number filter, accel sanitisation
+- \t clip animation — rect forms interpolate, drawing forms + \org snap
+- add CI / crates.io / docs.rs / MIT-license badges
+- bridge the resolver to the shared SubtitleCue IR
+- convert s/p/c b-spline through the proper B-spline -> Bezier basis
+- m auto-closes an open shape before moving; n does not
+- per-event style resolution + ResolvedStyle on the structured model
+- SSA <-> ASS dialect conversion on the structured model
+- typed resolver for the Collisions reposition policy
+- complete StyleDef typed-accessor set on the structured model
+- fix stale 'greedy word-wrap' wording in \fsp note
+- document the \q wrap-mode renderer path
+- end-to-end \q wrap-mode tests through the decoder
+- honour the SSA \q wrap mode in the renderer's word-wrap
+- document the script_info typed [Script Info] accessors
+- bridge document WrapStyle to per-line \q override
+- typed document-level [Script Info] header accessors
+- structured-model integration tests + README structured-path section
+- typed override-tag stream accessor on structured Event
+- project the structured model onto the shared subtitle IR
+- lossless structured ASS/SSA document model + parse_script/serialise
+- typed accessor for the per-style Alignment column
+- bake \i synthetic-italic oblique slant into rasterised RGBA
+
 ### Added
 
 - renderer: style-column fallback resolution — supply the track's
