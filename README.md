@@ -174,6 +174,24 @@ What the parser understands and preserves on round-trip:
   wins when present), so a renderer reasons about one wrapping model
   whether the mode arrives via the header or a tag. `ScaledBorderAndShadow`
   is not modelled — it is absent from both mirrored spec documents.
+- **Collision resolver** (`collision` module) — a typed, format-
+  agnostic implementation of the `Collisions` reposition policy:
+  `resolve_layout(boxes, geometry, policy)` places overlapping
+  bottom-anchored lines vertically per `Normal` (stack up from the
+  bottom margin, reuse a freed slot) and `Reverse` (latest line at the
+  bottom, earlier lines pushed up so the group reads top-down),
+  clamping at the top margin. Placement is **layer-aware** — per the
+  spec's `Layer` field, subtitles with different layer numbers are
+  ignored during collision detection, so `Normal` stacks and
+  `Reverse` runs resolve independently per layer — and
+  **margin-aware**: each `CollisionBox` may carry a per-line
+  `MarginV` bottom-margin override (the spec's all-zeroes-keeps-the-
+  style-default case maps to `None`, falling back to
+  `CanvasGeometry::bottom_margin_px`), so a margin-lifted line can
+  leave the default bottom slot free for a later line.
+  `CollisionBox::from_cue` bridges shared-IR cues (base layer, no
+  override); `CollisionBox::from_event` bridges a structured-model
+  `Event` row, lifting the typed `Layer` / `MarginV` / timestamps.
 - **Unknown sections preserved** — editor-private blocks like
   `[Aegisub Project Garbage]`, `[Aegisub Extradata]`, `[Aegisub Style
   Storage]`, `[Fonts]`, `[Graphics]`, and any other named section not
@@ -231,7 +249,11 @@ What the parser understands and preserves on round-trip:
   `\2c` / `\3c` / `\4c` (primary / secondary / outline / shadow
   colour), `\alpha` and `\1a` / `\2a` / `\3a` / `\4a` (per-component
   alpha), `\clip(rect)`, `\clip(drawing)`, `\iclip(rect)`,
-  `\iclip(drawing)`, `\q` (line wrap-style override; static per spec),
+  `\iclip(drawing)` (the rectangle forms interpolate per-corner
+  inside `\t(...)` — the override-tag reference lists `\clip` /
+  `\iclip` as animatable and notes only the rectangle versions
+  animate; the vector-drawing forms snap to the post-state at
+  `t > t1` like the other non-animatable tags), `\q` (line wrap-style override; static per spec),
   `\an<1..=9>` (numpad alignment) plus the legacy `\a<pos>` form
   (converted to the same numpad surface), `\pbo<y>` (drawing baseline
   Y-offset; positive = down, negative = up, applies only to `\p`
@@ -712,6 +734,23 @@ What the parser understands and preserves on round-trip:
   edge cases, leading-`+` / leading-zero magnitudes, whitespace
   trimming, the `is_bottom` accessor, the `Default` impl, and `Copy +
   Eq` ergonomics.
+
+- **Hostile-input hardening** — every parser entry point (`parse`,
+  `parse_script`, `parse_overrides`, `parse_drawing`) is total on
+  arbitrary bytes, and `AssScript::serialise` is a re-parse fixpoint
+  on arbitrary input (well-formed `\n`-terminated documents
+  serialise byte-identical on the first pass). Enforced by
+  `tests/hostile.rs`: targeted regressions for every bug the
+  mutation sweep found (nested-`\t` stack exhaustion, non-finite
+  wire numbers, UTF-8 char-boundary slice panics in the timestamp
+  and section parsers, trailing-newline accumulation, `[]` headers,
+  duplicated / repeated `Format:` columns) plus a seeded
+  4000-input xorshift mutation sweep replayed in CI; the same
+  generator ran 5M+ inputs clean in release mode.
+- **Benchmarks** — `benches/evaluate.rs` (criterion) covers the
+  per-frame evaluation hot path; see `BENCHMARKS.md` for the r401
+  baseline (static sample ~31 ns, worst-case animated sample ~83 ns,
+  full-document parse ~0.9 µs/event).
 
 Out of scope for this crate:
 
