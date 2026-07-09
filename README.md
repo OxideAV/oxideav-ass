@@ -409,9 +409,14 @@ What the parser understands and preserves on round-trip:
   inner group as the glyphs, so `\fad` opacity / `\frz` rotation /
   `\clip` / the animation transform compose over them as over text,
   and an active drop-shadow casts a congruent shadow copy of each
-  bar. A `None` (no `\u` / `\s` override) resolves to "off" — the
-  style's `Underline` / `StrikeOut` columns are not yet plumbed
-  through to the renderer (the same gap `\fsp` falls through). The
+  bar. A `None` (no `\u` / `\s` override) resolves to the style
+  row's `Underline` / `StrikeOut` column when the caller supplied
+  the track's style table (`AnimatedRenderedDecoder::set_styles`,
+  matched case-sensitively against `cue.style_ref` per the spec's
+  `Name` field), else "off"; an explicit override always wins —
+  `{\u0}` switches the bar off even under an underlined style. (The
+  style `Spacing` column remains un-plumbed: the shared
+  `SubtitleStyle` IR has no slot for it.) The
   `\i<flag>` italic toggle (`RenderState::italic`, `Option<bool>`)
   is baked in as a synthetic oblique slant: the face chain carries a
   single upright cut with no italic variant to swap in, so an
@@ -426,8 +431,9 @@ What the parser understands and preserves on round-trip:
   `\clip` envelope, and the underline / strikeout bars (and the
   drop-shadow copies) ride the same shear so they stay congruent
   with the slanted text. `\i0` and a missing `\i` both render
-  upright — the style's `Italic` column is not yet plumbed through
-  to the renderer (the same gap `\u` / `\s` / `\fsp` fall through).
+  upright unless the style table is supplied and the cue's style row
+  carries `Italic` — the same `set_styles` fallback chain as `\u` /
+  `\s` above, with an explicit `\i0` always winning.
   Opt out via `default-features = false`.
 - **`\q` wrap-mode word-wrap** (`render` cargo feature) — the
   `AnimatedRenderedDecoder` resolves the effective SSA wrap mode per

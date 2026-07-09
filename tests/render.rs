@@ -2036,3 +2036,157 @@ fn q_override_supersedes_document_default() {
         height_of(bb_plain)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Style-column fallback resolution (Underline / StrikeOut / Italic)
+
+/// Header whose Default style switches the given decoration column on
+/// (SSA `-1` = true).
+fn styled_header(bold: i32, italic: i32, underline: i32, strikeout: i32) -> String {
+    format!(
+        "[Script Info]\n\
+ScriptType: v4.00+\n\
+\n\
+[V4+ Styles]\n\
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, Alignment, MarginL, MarginR, MarginV, Outline, Shadow\n\
+Style: Default,DejaVuSans,32,&H00FFFFFF,&H00000000,&H00000000,{bold},{italic},{underline},{strikeout},2,10,10,10,1,0\n\
+\n\
+[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+}
+
+/// Render the first cue with the track's style table supplied to the
+/// decoder (the style-fallback path under test).
+fn render_first_frame_styled(src: &str, w: u32, h: u32) -> Option<Frame> {
+    let face = load_face()?;
+    let styles = ass::parse(src.as_bytes()).ok()?.styles;
+    let inner = build_decoder(src);
+    let mut dec = AnimatedRenderedDecoder::new(inner, w, h, face);
+    dec.set_styles(styles);
+    dec.receive_frame().ok()
+}
+
+#[test]
+fn style_underline_column_draws_bar_without_override() {
+    if load_face().is_none() {
+        return;
+    }
+    // No `\u` override anywhere: the style row's Underline=-1 column
+    // must switch the bar on once the style table is supplied.
+    let plain = format!(
+        "{}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n",
+        styled_header(0, 0, 0, 0)
+    );
+    let styled = format!(
+        "{}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n",
+        styled_header(0, 0, -1, 0)
+    );
+    let m_plain = alpha_mass(&render_first_frame_styled(&plain, 320, 120).expect("plain"));
+    let f_styled = render_first_frame_styled(&styled, 320, 120).expect("styled");
+    let m_styled = alpha_mass(&f_styled);
+    assert!(
+        m_styled > m_plain,
+        "style Underline column must add bar ink: plain={m_plain} styled={m_styled}"
+    );
+}
+
+#[test]
+fn explicit_u0_override_beats_style_underline() {
+    if load_face().is_none() {
+        return;
+    }
+    // `{\u0}` is an explicit off — it must win over the style row's
+    // Underline=-1 column, restoring the undecorated baseline mass.
+    let plain = format!(
+        "{}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n",
+        styled_header(0, 0, 0, 0)
+    );
+    let off = format!(
+        "{}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\u0}}SUB\n",
+        styled_header(0, 0, -1, 0)
+    );
+    let m_plain = alpha_mass(&render_first_frame_styled(&plain, 320, 120).expect("plain"));
+    let m_off = alpha_mass(&render_first_frame_styled(&off, 320, 120).expect("off"));
+    let lo = (m_plain as i64 * 95) / 100;
+    let hi = (m_plain as i64 * 105) / 100;
+    assert!(
+        (m_off as i64) >= lo && (m_off as i64) <= hi,
+        "explicit \\u0 must beat the style column: plain={m_plain} u0={m_off}"
+    );
+}
+
+#[test]
+fn style_strikeout_column_draws_bar_without_override() {
+    if load_face().is_none() {
+        return;
+    }
+    let plain = format!(
+        "{}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n",
+        styled_header(0, 0, 0, 0)
+    );
+    let styled = format!(
+        "{}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n",
+        styled_header(0, 0, 0, -1)
+    );
+    let m_plain = alpha_mass(&render_first_frame_styled(&plain, 320, 120).expect("plain"));
+    let m_styled = alpha_mass(&render_first_frame_styled(&styled, 320, 120).expect("styled"));
+    assert!(
+        m_styled > m_plain,
+        "style StrikeOut column must add bar ink: plain={m_plain} styled={m_styled}"
+    );
+}
+
+#[test]
+fn style_italic_column_slants_without_override() {
+    if load_face().is_none() {
+        return;
+    }
+    // Style Italic=-1 with no `\i` override: same widened-bbox signature
+    // as the `\i1` tag (baseline-pivoted synthetic oblique).
+    let plain = format!(
+        "{}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,LEAN\n",
+        styled_header(0, 0, 0, 0)
+    );
+    let styled = format!(
+        "{}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,LEAN\n",
+        styled_header(0, -1, 0, 0)
+    );
+    let bb_plain = alpha_bbox(
+        &render_first_frame_styled(&plain, 320, 200).expect("plain"),
+        320,
+    )
+    .expect("plain ink");
+    let bb_styled = alpha_bbox(
+        &render_first_frame_styled(&styled, 320, 200).expect("styled"),
+        320,
+    )
+    .expect("styled ink");
+    assert!(
+        bb_styled.2 - bb_styled.0 > bb_plain.2 - bb_plain.0,
+        "style Italic column must slant: plain={bb_plain:?} styled={bb_styled:?}"
+    );
+}
+
+#[test]
+fn style_columns_ignored_without_style_table() {
+    if load_face().is_none() {
+        return;
+    }
+    // Back-compat: a decoder with no style table supplied keeps the
+    // previous behaviour — the Underline column has no effect.
+    let styled = format!(
+        "{}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n",
+        styled_header(0, 0, -1, 0)
+    );
+    let plain = format!(
+        "{}Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SUB\n",
+        styled_header(0, 0, 0, 0)
+    );
+    let m_no_table = alpha_mass(&render_first_frame(&styled, 320, 120).expect("no table"));
+    let m_plain = alpha_mass(&render_first_frame(&plain, 320, 120).expect("plain"));
+    assert_eq!(
+        m_no_table, m_plain,
+        "without set_styles the column must stay inert"
+    );
+}

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- renderer: style-column fallback resolution — supply the track's
+  style table via `AnimatedRenderedDecoder::set_styles` (new public
+  `styles` field) and a cue with no `\u` / `\s` / `\i` override
+  resolves its `Underline` / `StrikeOut` / `Italic` flags from the
+  style row named by `cue.style_ref` (case-sensitive per the spec's
+  `Name` field); an explicit override always wins, including an
+  explicit off
 - collision resolver: layer-aware and margin-aware placement.
   `CollisionBox` (now `#[non_exhaustive]`, with `new` /
   `with_layer` / `with_bottom_margin` builders) carries the event's
@@ -34,6 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- base parser: a *redundant* flag-off tag (`{\u0}` / `\i0` / `\s0` /
+  `\b0` while the flag is already off) was consumed with no wrapper
+  representation, so it vanished from the parse → write round-trip
+  and the animate extractor never saw the author's explicit
+  style-column override. Such tags now pass through as
+  `Segment::Raw`, round-trip verbatim, and reach
+  `RenderState::{underline,strikeout,italic}` as `Some(false)`; an
+  off that closes an open span still folds into the wrapper (no
+  duplicate emit)
 - structured model: four `serialise` fixpoint violations found by a
   2M-input deterministic mutation sweep — (1) the phantom final `""`
   segment of a `\n`-terminated document landed in the last section's

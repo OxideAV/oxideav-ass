@@ -616,8 +616,17 @@ fn handle_overrides(
                 // typed extraction (AnimatedTag::B) can recover the
                 // weight from Segment::Raw and the round-trip writer
                 // keeps `\b<weight>` byte-faithful.
+                //
+                // A `\b0` while bold is already off (a *redundant
+                // off*) has no wrapper representation — the Segment
+                // tree only expresses "on around these children".
+                // Consuming it here made the tag vanish on round-trip
+                // AND hid the author's explicit style-column override
+                // from the animate extractor, so it passes through
+                // verbatim instead (same rule as `\i` / `\u` / `\s`
+                // below).
                 let p = param.trim();
-                if p == "0" || p == "1" {
+                if p == "1" || (p == "0" && state.bold) {
                     state.bold = p == "1";
                     true
                 } else {
@@ -625,16 +634,22 @@ fn handle_overrides(
                 }
             }
             "i" => {
-                state.italic = parse_bool_flag(&param);
-                true
+                let on = parse_bool_flag(&param);
+                let redundant_off = !on && !state.italic;
+                state.italic = on;
+                !redundant_off
             }
             "u" => {
-                state.underline = parse_bool_flag(&param);
-                true
+                let on = parse_bool_flag(&param);
+                let redundant_off = !on && !state.underline;
+                state.underline = on;
+                !redundant_off
             }
             "s" => {
-                state.strike = parse_bool_flag(&param);
-                true
+                let on = parse_bool_flag(&param);
+                let redundant_off = !on && !state.strike;
+                state.strike = on;
+                !redundant_off
             }
             "c" | "1c" => {
                 if let Some((r, g, b, _)) = parse_ass_color(&param) {
@@ -1152,6 +1167,43 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\b1}Hello{\b0} world
     fn ass_timestamp() {
         let t = parse_ass_timestamp("0:00:01.50").unwrap();
         assert_eq!(t, 1_500_000);
+    }
+
+    #[test]
+    fn redundant_flag_off_tags_round_trip_verbatim() {
+        // `{\u0}` (and `\i0` / `\s0` / `\b0`) with the flag already
+        // off has no wrapper representation in the Segment tree — it
+        // used to be consumed and vanish on round-trip, hiding the
+        // author's explicit style-column override. It must survive as
+        // a Raw pass-through instead.
+        let src = "[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\u0}under{\\i0}it{\\s0}str{\\b0}bold\n";
+        let track = parse(src.as_bytes()).unwrap();
+        let out = String::from_utf8(write(&track)).unwrap();
+        for tag in ["\\u0", "\\i0", "\\s0", "\\b0"] {
+            assert!(out.contains(tag), "{tag} must survive round-trip: {out}");
+        }
+        // And the animate extractor sees the explicit off.
+        let anim = crate::extract_cue_animation(&track.cues[0]);
+        let st = anim.evaluate_at(500, 2000);
+        assert_eq!(st.underline, Some(false));
+        assert_eq!(st.italic, Some(false));
+        assert_eq!(st.strikeout, Some(false));
+    }
+
+    #[test]
+    fn closing_flag_off_still_folds_into_wrapper() {
+        // A `\u0` that closes an open `\u1` span is the wrapper
+        // representation's own closer — it must NOT be duplicated
+        // into a Raw pass-through.
+        let src = "[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\u1}on{\\u0}off\n";
+        let track = parse(src.as_bytes()).unwrap();
+        let out = String::from_utf8(write(&track)).unwrap();
+        assert_eq!(out.matches("\\u0").count(), 1, "exactly one \\u0 in: {out}");
+        assert_eq!(out.matches("\\u1").count(), 1);
     }
 
     #[test]

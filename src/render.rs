@@ -124,6 +124,17 @@ pub struct AnimatedRenderedDecoder {
     /// value; callers that parsed a different `WrapStyle` from the
     /// document header set it here.
     pub default_wrap_style: WrapStyle,
+    /// The track's `[V4+ Styles]` table (shared-IR
+    /// [`oxideav_core::SubtitleStyle`] rows, e.g. `track.styles` from
+    /// [`crate::parse`]). A cue whose `style_ref` names a row here
+    /// resolves its `Underline` / `StrikeOut` / `Italic` style columns
+    /// from it when no per-segment `\u` / `\s` / `\i` override is
+    /// present (an explicit override always wins, including an
+    /// explicit *off*). Style-name lookup is case-sensitive per the
+    /// spec's `Name` field. Empty (the default) keeps the previous
+    /// behaviour: no style fallback, `None` overrides resolve to
+    /// upright / undecorated. Set via [`Self::set_styles`].
+    pub styles: Vec<oxideav_core::SubtitleStyle>,
 }
 
 /// One decoded cue + its lazily-evaluated animation.
@@ -149,7 +160,14 @@ impl AnimatedRenderedDecoder {
             side_margin_px: 8,
             bottom_margin_px: 24,
             default_wrap_style: WrapStyle::SmartEven,
+            styles: Vec::new(),
         }
+    }
+
+    /// Supply the track's style table for style-column fallback
+    /// resolution — see [`Self::styles`].
+    pub fn set_styles(&mut self, styles: Vec<oxideav_core::SubtitleStyle>) {
+        self.styles = styles;
     }
 
     /// Set the cue-relative time at which the *next* `receive_frame`
@@ -425,10 +443,13 @@ impl AnimatedRenderedDecoder {
         // pins no line geometry beyond "underlined" / "struck out". The
         // typed extractor resolves them into `RenderState::underline` /
         // `RenderState::strikeout` as `Option<bool>`, where `None` means
-        // "fall back to the style flag". The style's `Underline` /
-        // `StrikeOut` columns are not plumbed through to the renderer
-        // yet (the same gap `\fsp` falls through), so a `None` resolves
-        // to "off" here; an explicit `Some(true)` draws the line.
+        // "fall back to the style flag". When the caller supplied the
+        // track's style table (`Self::styles`) and the cue's
+        // `style_ref` names a row, a `None` resolves to that row's
+        // `Underline` / `StrikeOut` column (case-sensitive name match
+        // per the spec); otherwise `None` resolves to "off". An
+        // explicit `Some(_)` always wins — `{\u0}` switches the bar
+        // off even under an underlined style.
         //
         // Both decorations are drawn as a filled horizontal bar spanning
         // the visual line's shaped width in the primary fill colour
@@ -454,8 +475,16 @@ impl AnimatedRenderedDecoder {
         let deco_thickness = (size_px / 18.0).max(1.0);
         let face_descent_f = (-face.primary().descent_px(size_px)).max(0.0);
         let face_ascent_f = face.primary().ascent_px(size_px).max(0.0);
-        let underline_on = state.underline == Some(true);
-        let strikeout_on = state.strikeout == Some(true);
+        let cue_style = cue
+            .style_ref
+            .as_deref()
+            .and_then(|name| self.styles.iter().find(|s| s.name == name));
+        let underline_on = state
+            .underline
+            .unwrap_or_else(|| cue_style.is_some_and(|s| s.underline));
+        let strikeout_on = state
+            .strikeout
+            .unwrap_or_else(|| cue_style.is_some_and(|s| s.strike));
         // Italic (`\i1`) synthetic-oblique slant. Per the override-tag
         // reference `\i1`/`\i0` simply "switch italics text on or off";
         // no slant angle is pinned, and the renderer's `FaceChain`
@@ -467,10 +496,12 @@ impl AnimatedRenderedDecoder {
         // factor is `tan(SYNTH_ITALIC_RAD)` — a renderer-derived
         // constant, like the `\u`/`\s` bar geometry above, since the
         // spec supplies no number. `None` (no `\i` override) resolves
-        // to upright here; the style's `Italic` column is not plumbed
-        // through to the renderer yet (the same gap `\u`/`\s`/`\fsp`
-        // fall through).
-        let italic_on = state.italic == Some(true);
+        // to the style row's `Italic` column when the style table is
+        // supplied (same fallback chain as `\u` / `\s` above), else
+        // upright.
+        let italic_on = state
+            .italic
+            .unwrap_or_else(|| cue_style.is_some_and(|s| s.italic));
         let italic_slant = if italic_on {
             SYNTH_ITALIC_RAD.tan()
         } else {
