@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- animate: hostile-input hardening on the override evaluator — a
+  `\t(\t(\t(…` chain deeper than 8 levels no longer recurses
+  unboundedly (stack exhaustion on ~100k nested openers); non-finite
+  wire numbers (`nan`, `inf`, exponent overflow like `1e999`) are
+  rejected at parse time instead of poisoning every interpolated
+  field; a NaN / negative `accel` on a caller-constructed `\t` is
+  sanitised so the interpolation factor stays finite inside `[0, 1]`
+  and the pre-state still holds before `t1`
 - animate: `\clip` / `\iclip` inside `\t(...)` are no longer dropped.
   The rectangle forms interpolate per-corner on the accelerated ramp
   (the override-tag reference lists both as animatable and notes only

@@ -1045,10 +1045,25 @@ fn apply_t(
     } else {
         (t_ms - start) as f32 / (end - start) as f32
     };
+    // Sanitise the acceleration exponent: the wire parser filters
+    // non-finite tokens, but `AnimatedTag::T` is a public type so a
+    // caller-constructed NaN/inf accel must not poison the state.
+    let accel = if accel.is_finite() { accel } else { 1.0 };
     let k = if accel.abs() < f32::EPSILON {
         raw
     } else {
         raw.powf(accel)
+    };
+    // A negative accel maps raw ∈ (0,1) outside [0,1] (raw⁻ⁿ → ∞ as
+    // raw → 0, and 0⁻ⁿ = +inf exactly at the ramp start); the
+    // interpolation factor is only meaningful inside the unit
+    // interval, so clamp — and fall back to the linear `raw` (always
+    // finite, in [0,1]) for the non-finite corners, which keeps the
+    // "before t1 the style is the pre-state" rule intact.
+    let k = if k.is_finite() {
+        k.clamp(0.0, 1.0)
+    } else {
+        raw
     };
     // Interpolate every field that the inner tags could have touched.
     st.scale.0 = lerp_f32(pre.scale.0, post.scale.0, k);
@@ -1468,6 +1483,22 @@ fn parse_raw_block(raw: &str, out: &mut Vec<AnimatedTag>) {
 /// round-trip text path retains them via the existing `Segment::Raw`
 /// store.
 pub fn parse_overrides(block: &str, out: &mut Vec<AnimatedTag>) {
+    parse_overrides_depth(block, out, 0);
+}
+
+/// Maximum `\t(...)` nesting depth the parser will recurse into.
+///
+/// The override-tag reference gives no meaning to a `\t` inside
+/// another `\t`'s modifier list, but the grammar admits it, so the
+/// parser follows the nesting a few levels deep for robustness.
+/// Beyond this cap a further `\t` is left unparsed (dropped from the
+/// typed tag list; the textual round-trip retains the original block
+/// verbatim through `Segment::Raw`). Without a cap a hostile
+/// `\t(\t(\t(…` chain recurses once per level and can exhaust the
+/// stack.
+const MAX_T_DEPTH: usize = 8;
+
+fn parse_overrides_depth(block: &str, out: &mut Vec<AnimatedTag>, depth: usize) {
     let bytes = block.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -1499,7 +1530,7 @@ pub fn parse_overrides(block: &str, out: &mut Vec<AnimatedTag>) {
         // because the karaoke family is case-sensitive: `\K` (uppercase)
         // is the secondary→primary sweep, identical to `\kf`, while `\k`
         // (lowercase) is the instant fill switch.
-        if let Some(t) = parse_one(&name_lc, name, &param) {
+        if let Some(t) = parse_one(&name_lc, name, &param, depth) {
             out.push(t);
         }
     }
@@ -1541,7 +1572,7 @@ fn read_param(s: &str) -> (String, usize) {
     }
 }
 
-fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag> {
+fn parse_one(name_lc: &str, name_orig: &str, param: &str, depth: usize) -> Option<AnimatedTag> {
     // `\fn<name>` and `\r[<name>]` have no separator between the tag
     // and the inline name — the tokenizer greedily eats every
     // alphabetic byte into the tag-name slot, so they arrive here as
@@ -1625,9 +1656,9 @@ fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag>
                 _ => None,
             }
         }
-        "frz" | "fr" => param.trim().parse::<f32>().ok().map(AnimatedTag::Frz),
-        "frx" => param.trim().parse::<f32>().ok().map(AnimatedTag::Frx),
-        "fry" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fry),
+        "frz" | "fr" => parse_finite_f32(param).map(AnimatedTag::Frz),
+        "frx" => parse_finite_f32(param).map(AnimatedTag::Frx),
+        "fry" => parse_finite_f32(param).map(AnimatedTag::Fry),
         "pos" => {
             // `\pos(x, y)` — static line position. The spec requires
             // integer coordinates, but decimal values appear in the
@@ -1647,20 +1678,20 @@ fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag>
                 None
             }
         }
-        "blur" => param.trim().parse::<f32>().ok().map(AnimatedTag::Blur),
+        "blur" => parse_finite_f32(param).map(AnimatedTag::Blur),
         "be" => {
             // `\be(N)` — iterative box-blur; the spec requires an
             // integer strength. Accept floats from the wild and round.
-            let n = param.trim().parse::<f32>().ok()?;
+            let n = parse_finite_f32(param)?;
             let n = n.clamp(0.0, 255.0).round() as u8;
             Some(AnimatedTag::Be(n))
         }
-        "bord" => param.trim().parse::<f32>().ok().map(AnimatedTag::Bord),
-        "xbord" => param.trim().parse::<f32>().ok().map(AnimatedTag::Xbord),
-        "ybord" => param.trim().parse::<f32>().ok().map(AnimatedTag::Ybord),
-        "shad" => param.trim().parse::<f32>().ok().map(AnimatedTag::Shad),
-        "xshad" => param.trim().parse::<f32>().ok().map(AnimatedTag::Xshad),
-        "yshad" => param.trim().parse::<f32>().ok().map(AnimatedTag::Yshad),
+        "bord" => parse_finite_f32(param).map(AnimatedTag::Bord),
+        "xbord" => parse_finite_f32(param).map(AnimatedTag::Xbord),
+        "ybord" => parse_finite_f32(param).map(AnimatedTag::Ybord),
+        "shad" => parse_finite_f32(param).map(AnimatedTag::Shad),
+        "xshad" => parse_finite_f32(param).map(AnimatedTag::Xshad),
+        "yshad" => parse_finite_f32(param).map(AnimatedTag::Yshad),
         "pbo" => {
             // `\pbo<y>` — Y-offset for drawing coordinates. The Aegisub
             // examples use whole pixels (`\pbo-50`, `\pbo100`); accept
@@ -1670,7 +1701,7 @@ fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag>
             if raw.is_empty() {
                 return None;
             }
-            let y = raw.parse::<f32>().ok()?;
+            let y = parse_finite_f32(raw)?;
             // Clamp to i32 range before rounding so degenerate inputs
             // like `\pbo1e20` do not saturate.
             let y = y.clamp(i32::MIN as f32, i32::MAX as f32).round() as i32;
@@ -1698,12 +1729,12 @@ fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag>
             }
             Some(AnimatedTag::P(n as u8))
         }
-        "fax" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fax),
-        "fay" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fay),
-        "fscx" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fscx),
-        "fscy" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fscy),
-        "fs" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fs),
-        "fsp" => param.trim().parse::<f32>().ok().map(AnimatedTag::Fsp),
+        "fax" => parse_finite_f32(param).map(AnimatedTag::Fax),
+        "fay" => parse_finite_f32(param).map(AnimatedTag::Fay),
+        "fscx" => parse_finite_f32(param).map(AnimatedTag::Fscx),
+        "fscy" => parse_finite_f32(param).map(AnimatedTag::Fscy),
+        "fs" => parse_finite_f32(param).map(AnimatedTag::Fs),
+        "fsp" => parse_finite_f32(param).map(AnimatedTag::Fsp),
         "q" => {
             // `\q<mode>` — 0/1/2/3 per spec. Values outside that
             // range are skipped (the renderer falls back to the
@@ -1747,7 +1778,7 @@ fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag>
             // `\k` = instant fill, `\K` = sweep (identical to `\kf`).
             // Negative durations clamp to 0. `\kt` is deliberately not
             // handled (Aegisub: "rarely useful … not documented").
-            let cs = param.trim().parse::<f32>().ok()?;
+            let cs = parse_finite_f32(param)?;
             let cs = cs.max(0.0).round() as u32;
             let kind = match name_lc {
                 "kf" => KaraokeKind::Sweep,
@@ -1843,7 +1874,7 @@ fn parse_one(name_lc: &str, name_orig: &str, param: &str) -> Option<AnimatedTag>
                 Some(AnimatedTag::R(Some(name.to_string())))
             }
         }
-        "t" => parse_t(param),
+        "t" => parse_t(param, depth),
         _ => None,
     }
 }
@@ -1877,9 +1908,19 @@ fn parse_int_list(s: &str) -> Vec<i32> {
 
 fn parse_float_list(s: &str) -> Vec<f32> {
     s.split(',')
-        .map(|p| p.trim().parse::<f32>().ok())
+        .map(parse_finite_f32)
         .collect::<Option<Vec<_>>>()
         .unwrap_or_default()
+}
+
+/// Parse a wire token as a *finite* `f32`. `str::parse::<f32>`
+/// accepts `nan` / `inf` / overflowing exponents (which round to
+/// ±inf); none of those are meaningful ASS parameter values, and a
+/// NaN reaching the evaluator would poison every interpolated field
+/// it touches. Non-finite → `None`, so the tag is dropped from the
+/// typed list (the textual round-trip keeps it verbatim).
+fn parse_finite_f32(s: &str) -> Option<f32> {
+    s.trim().parse::<f32>().ok().filter(|v| v.is_finite())
 }
 
 fn parse_color_rgb(s: &str) -> Option<(u8, u8, u8)> {
@@ -1904,7 +1945,7 @@ fn parse_clip(param: &str, inverse: bool) -> Option<AnimatedTag> {
     // form: visible *outside* the rectangle / path.
     let parts: Vec<&str> = param.split(',').map(|s| s.trim()).collect();
     if parts.len() == 4 {
-        let n: Vec<Option<f32>> = parts.iter().map(|p| p.parse::<f32>().ok()).collect();
+        let n: Vec<Option<f32>> = parts.iter().map(|p| parse_finite_f32(p)).collect();
         if n.iter().all(|x| x.is_some()) {
             let n: Vec<f32> = n.into_iter().map(|x| x.unwrap()).collect();
             return Some(if inverse {
@@ -1931,7 +1972,7 @@ fn parse_clip(param: &str, inverse: bool) -> Option<AnimatedTag> {
     })
 }
 
-fn parse_t(param: &str) -> Option<AnimatedTag> {
+fn parse_t(param: &str, depth: usize) -> Option<AnimatedTag> {
     // Possible shapes:
     //   \t(tags)
     //   \t(accel, tags)
@@ -1941,9 +1982,12 @@ fn parse_t(param: &str) -> Option<AnimatedTag> {
     // can't naively split on `,`. Strategy: numeric-prefix parsing —
     // peel off leading numbers, then everything else is the tags
     // string.
+    if depth >= MAX_T_DEPTH {
+        return None;
+    }
     let (nums, tags_str) = peel_leading_numbers(param);
     let mut inner: Vec<AnimatedTag> = Vec::new();
-    parse_overrides(tags_str, &mut inner);
+    parse_overrides_depth(tags_str, &mut inner, depth + 1);
     let (t1, t2, accel) = match nums.len() {
         0 => (None, None, 1.0_f32),
         1 => (None, None, nums[0]),
@@ -1981,8 +2025,8 @@ fn peel_leading_numbers(s: &str) -> (Vec<f32>, &str) {
                 break;
             }
         }
-        match head.parse::<f32>() {
-            Ok(n) => {
+        match parse_finite_f32(head) {
+            Some(n) => {
                 nums.push(n);
                 if k >= bytes.len() {
                     cursor = "";
@@ -1996,7 +2040,7 @@ fn peel_leading_numbers(s: &str) -> (Vec<f32>, &str) {
                 cursor = &cursor[k + 1..];
                 cursor = cursor.trim_start();
             }
-            Err(_) => break,
+            None => break,
         }
     }
     (nums, cursor)
@@ -4128,6 +4172,104 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\i1}it{\\u1}u{\\s1}s\n";
             anim.evaluate_at(700, 2000).iclip_drawing.as_deref(),
             Some("m 0 0 l 5 5")
         );
+    }
+
+    /// Nesting depth of the `\t` chain rooted at `tags` (0 = no `\t`).
+    fn t_depth(tags: &[AnimatedTag]) -> usize {
+        tags.iter()
+            .map(|t| match t {
+                AnimatedTag::T { inner, .. } => 1 + t_depth(inner),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn hostile_deeply_nested_t_does_not_overflow_stack() {
+        // 100k unterminated `\t(` openers: without the depth cap the
+        // parser recurses once per level (and re-copies the remainder
+        // of the block at each level) — this test exhausted the stack
+        // before MAX_T_DEPTH was introduced.
+        let block = "\\t(0,100,".repeat(100_000) + "\\fscx200";
+        let mut tags = Vec::new();
+        parse_overrides(&block, &mut tags);
+        assert!(t_depth(&tags) <= MAX_T_DEPTH);
+        // Whatever was parsed must evaluate to a finite, total state.
+        let st = CueAnimation { tags }.evaluate_at(50, 100);
+        assert!(st.scale.0.is_finite());
+    }
+
+    #[test]
+    fn nested_t_parses_within_depth_cap() {
+        let mut tags = Vec::new();
+        parse_overrides("\\t(0,1000,\\t(0,500,\\fscx200))", &mut tags);
+        assert_eq!(t_depth(&tags), 2);
+        // Beyond the cap the innermost \t is left unparsed.
+        let deep =
+            "\\t(0,100,".repeat(MAX_T_DEPTH + 1) + "\\fscx200" + &")".repeat(MAX_T_DEPTH + 1);
+        let mut tags = Vec::new();
+        parse_overrides(&deep, &mut tags);
+        assert_eq!(t_depth(&tags), MAX_T_DEPTH);
+    }
+
+    #[test]
+    fn non_finite_params_are_dropped() {
+        // `str::parse::<f32>` accepts "nan" and exponent overflow
+        // ("1e999" → inf); neither is a meaningful wire value.
+        let mut tags = Vec::new();
+        parse_overrides("\\pos(nan,50)", &mut tags);
+        assert!(tags.is_empty(), "NaN \\pos must drop: {tags:?}");
+        let mut tags = Vec::new();
+        parse_overrides("\\frz1e999", &mut tags);
+        assert!(tags.is_empty(), "inf \\frz must drop: {tags:?}");
+        let mut tags = Vec::new();
+        parse_overrides("\\fscxinf", &mut tags);
+        assert!(tags.is_empty(), "inf \\fscx must drop: {tags:?}");
+        // A finite neighbour still parses.
+        let mut tags = Vec::new();
+        parse_overrides("\\blurnan\\frz90", &mut tags);
+        assert_eq!(tags.len(), 1);
+        assert!(matches!(tags[0], AnimatedTag::Frz(_)));
+    }
+
+    #[test]
+    fn hostile_t_accel_yields_finite_state() {
+        // NaN accel constructed directly through the public type.
+        let anim = CueAnimation {
+            tags: vec![AnimatedTag::T {
+                t1_ms: Some(0),
+                t2_ms: Some(1000),
+                accel: f32::NAN,
+                inner: vec![AnimatedTag::Fscx(200.0)],
+            }],
+        };
+        let st = anim.evaluate_at(500, 1000);
+        assert!(st.scale.0.is_finite(), "NaN accel leaked: {}", st.scale.0);
+        // Negative accel maps raw ∈ (0,1) above 1; the factor clamps
+        // to the unit interval so the state stays between the
+        // endpoints.
+        let mut tags = Vec::new();
+        parse_overrides("\\t(0,1000,-2,\\fscx200)", &mut tags);
+        let anim = CueAnimation { tags };
+        let s = anim.evaluate_at(500, 1000).scale.0;
+        assert!((1.0..=2.0).contains(&s), "negative accel escaped: {s}");
+        assert_eq!(anim.evaluate_at(0, 1000).scale.0, 1.0);
+    }
+
+    #[test]
+    fn hostile_t_nan_time_recovers_inner_tags() {
+        // "nan" is not peeled as a time — peeling stops and the inner
+        // tag list is still recovered from the remainder.
+        let mut tags = Vec::new();
+        parse_overrides("\\t(0,1000,nan,\\fscx200)", &mut tags);
+        assert_eq!(tags.len(), 1);
+        match &tags[0] {
+            AnimatedTag::T { inner, .. } => {
+                assert!(matches!(inner[0], AnimatedTag::Fscx(_)));
+            }
+            other => panic!("expected \\t, got {other:?}"),
+        }
     }
 
     #[test]
