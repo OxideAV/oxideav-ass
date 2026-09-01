@@ -945,6 +945,7 @@ pub(crate) fn looks_like_ass(buf: &[u8]) -> bool {
 /// Serialise one cue to a single `Dialogue:` line. Public alias of
 /// the crate-private `cue_to_bytes` so integration tests + external
 /// drivers can build packets without going through the demuxer.
+#[doc(hidden)]
 pub fn cue_to_bytes_pub(cue: &SubtitleCue) -> Vec<u8> {
     cue_to_bytes(cue)
 }

@@ -274,6 +274,7 @@ fn is_number(s: &str) -> bool {
 /// Try to recognise `\clip(drawing)` arguments of the form
 /// `[scale_exp,] drawing_str`. Returns the scale exponent (default 1)
 /// and the drawing-mode body.
+#[doc(hidden)]
 pub fn split_clip_arg(arg: &str) -> (u32, &str) {
     let trimmed = arg.trim_start();
     // The leading scale is a single integer followed by a comma.
