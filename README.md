@@ -29,21 +29,17 @@ emits one packet per `Dialogue:` event; the codec on either side
 converts packets to the shared `SubtitleCue` IR (from `oxideav-core`).
 
 ```rust
-use oxideav_codec::CodecRegistry;
-use oxideav_container::ContainerRegistry;
-use oxideav_core::Frame;
+use oxideav_core::{Frame, RuntimeContext};
 
-let mut codecs = CodecRegistry::new();
-let mut containers = ContainerRegistry::new();
-oxideav_ass::register_codecs(&mut codecs);
-oxideav_ass::register_containers(&mut containers);
+let mut ctx = RuntimeContext::new();
+oxideav_ass::register(&mut ctx); // codec "ass" + the .ass / .ssa container
 
-let input: Box<dyn oxideav_container::ReadSeek> = Box::new(
+let input: Box<dyn oxideav_core::ReadSeek> = Box::new(
     std::io::Cursor::new(std::fs::read("subtitle.ass")?),
 );
-let mut dmx = containers.open("ass", input)?;
-let stream = &dmx.streams()[0];
-let mut dec = codecs.make_decoder(&stream.params)?;
+let mut dmx = ctx.containers.open_demuxer("ass", input, &ctx.codecs)?;
+let params = dmx.streams()[0].params.clone();
+let mut dec = ctx.codecs.first_decoder(&params)?;
 
 loop {
     match dmx.next_packet() {
@@ -51,6 +47,7 @@ loop {
             dec.send_packet(&pkt)?;
             while let Ok(Frame::Subtitle(cue)) = dec.receive_frame() {
                 // cue.start_us / cue.end_us, cue.segments, cue.style_ref
+                let _ = cue;
             }
         }
         Err(oxideav_core::Error::Eof) => break,
@@ -67,6 +64,7 @@ If you just want the text format without the codec+container pipeline:
 ```rust
 let track = oxideav_ass::parse(&std::fs::read("sub.ass")?)?;
 let out_bytes = oxideav_ass::write(&track);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ### Structured document model
@@ -118,10 +116,14 @@ Direct ASS / SRT and ASS / WebVTT conversion helpers are exposed — they
 parse into the shared IR and re-emit in the target format.
 
 ```rust
+# let srt_bytes = std::fs::read("sub.srt")?;
+# let ass_bytes = std::fs::read("sub.ass")?;
+# let vtt_bytes = std::fs::read("sub.vtt")?;
 let ass = oxideav_ass::srt_to_ass(&srt_bytes)?;
 let srt = oxideav_ass::ass_to_srt(&ass_bytes)?;
 let vtt = oxideav_ass::ass_to_webvtt(&ass_bytes)?;
 let ass = oxideav_ass::webvtt_to_ass(&vtt_bytes)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 The structured model also converts between the **SSA `[V4 Styles]`** and
@@ -137,8 +139,10 @@ the originating dialect restores dialect-specific columns (ASS-only
 SSA-only `AlphaLevel`).
 
 ```rust
+# let ass_bytes = std::fs::read("sub.ass")?;
 let script = oxideav_ass::parse_script(&ass_bytes);
 let ssa_bytes = script.to_ssa().serialise();   // ASS → legacy SSA
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ## Feature coverage
