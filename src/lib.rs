@@ -1003,6 +1003,8 @@ pub fn register_codecs(reg: &mut CodecRegistry) {
         max_channels: None,
         priority: 100,
         accepted_pixel_formats: Vec::new(),
+        // Fields this subtitle codec does not constrain keep their defaults.
+        ..CodecCapabilities::audio(String::new())
     };
     reg.register(
         CodecInfo::new(CodecId::new(codec::ASS_CODEC_ID))
