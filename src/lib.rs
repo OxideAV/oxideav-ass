@@ -987,25 +987,15 @@ pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
 
 /// Register the ASS codec (decoder + encoder).
 pub fn register_codecs(reg: &mut CodecRegistry) {
-    let caps = CodecCapabilities {
-        decode: true,
-        encode: true,
-        media_type: MediaType::Subtitle,
-        intra_only: true,
-        lossy: false,
-        lossless: true,
-        hardware_accelerated: false,
-        implementation: "ass_sw".into(),
-        max_width: None,
-        max_height: None,
-        max_bitrate: None,
-        max_sample_rate: None,
-        max_channels: None,
-        priority: 100,
-        accepted_pixel_formats: Vec::new(),
-        // Fields this subtitle codec does not constrain keep their defaults.
-        ..CodecCapabilities::audio(String::new())
-    };
+    // Built through the constructor + builders: `CodecCapabilities` is
+    // `#[non_exhaustive]`, so a literal (or struct update) from this crate
+    // would stop compiling whenever core adds a field.
+    let mut caps = CodecCapabilities::audio("ass_sw")
+        .with_decode()
+        .with_encode()
+        .with_intra_only(true)
+        .with_lossless(true);
+    caps.media_type = MediaType::Subtitle;
     reg.register(
         CodecInfo::new(CodecId::new(codec::ASS_CODEC_ID))
             .capabilities(caps)
