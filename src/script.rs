@@ -42,11 +42,11 @@
 //! Field meanings follow the SSA v4.00+ script-format specification and
 //! its `[v4 Styles]` / `[v4 Styles+]` style-line definitions.
 
-use crate::dialogue_layer::{parse_layer_field, LayerOverride};
-use crate::dialogue_margin::{parse_margin_field, MarginOverride};
-use crate::event_effect::{parse_effect_field, EventEffect};
-use crate::style_border::{parse_border_style_field, BorderStyle};
-use crate::style_encoding::{parse_encoding_field, StyleEncoding};
+use crate::dialogue_layer::{LayerOverride, parse_layer_field};
+use crate::dialogue_margin::{MarginOverride, parse_margin_field};
+use crate::event_effect::{EventEffect, parse_effect_field};
+use crate::style_border::{BorderStyle, parse_border_style_field};
+use crate::style_encoding::{StyleEncoding, parse_encoding_field};
 
 /// One parsed ASS/SSA script section, preserved in source order.
 ///
@@ -805,14 +805,14 @@ impl AssScript {
             match section {
                 Section::ScriptInfo(info) => {
                     for line in &mut info.lines {
-                        if let InfoLine::Pair { key, value } = line {
-                            if key.eq_ignore_ascii_case("ScriptType") {
-                                *value = if want_ass {
-                                    "v4.00+".to_string()
-                                } else {
-                                    "v4.00".to_string()
-                                };
-                            }
+                        if let InfoLine::Pair { key, value } = line
+                            && key.eq_ignore_ascii_case("ScriptType")
+                        {
+                            *value = if want_ass {
+                                "v4.00+".to_string()
+                            } else {
+                                "v4.00".to_string()
+                            };
                         }
                     }
                 }
@@ -1091,10 +1091,10 @@ pub fn parse_script(bytes: &[u8]) -> AssScript {
                     if table.format.is_empty() {
                         table.format = dedupe_fields(split_fields(rest));
                     }
-                } else if let Some(rest) = strip_descriptor(trimmed, "Style") {
-                    if let Some(s) = parse_style_row(rest, &table.format) {
-                        table.styles.push(s);
-                    }
+                } else if let Some(rest) = strip_descriptor(trimmed, "Style")
+                    && let Some(s) = parse_style_row(rest, &table.format)
+                {
+                    table.styles.push(s);
                 }
                 // Blank / unknown lines inside a style table are dropped
                 // (the serialiser re-synthesises the canonical blank
@@ -1106,12 +1106,11 @@ pub fn parse_script(bytes: &[u8]) -> AssScript {
                     if table.format.is_empty() {
                         table.format = dedupe_fields(split_fields(rest));
                     }
-                } else if let Some((desc, rest)) = trimmed.split_once(':') {
-                    if let Some(kind) = EventKind::from_descriptor(desc) {
-                        if let Some(ev) = parse_event_row(kind, rest.trim_start(), &table.format) {
-                            table.events.push(ev);
-                        }
-                    }
+                } else if let Some((desc, rest)) = trimmed.split_once(':')
+                    && let Some(kind) = EventKind::from_descriptor(desc)
+                    && let Some(ev) = parse_event_row(kind, rest.trim_start(), &table.format)
+                {
+                    table.events.push(ev);
                 }
             }
             Acc::Raw(r) => {
@@ -1471,10 +1470,11 @@ Dialogue: 1,0:00:04.00,0:00:06.00,Title,,0,0,0,Banner;50,Scrolling, text here\n"
         assert_eq!(info.get("playresy"), Some("720"));
         assert!(info.is_ass());
         // The comment line is preserved.
-        assert!(info
-            .lines
-            .iter()
-            .any(|l| matches!(l, InfoLine::Comment(c) if c.contains("A comment line"))));
+        assert!(
+            info.lines
+                .iter()
+                .any(|l| matches!(l, InfoLine::Comment(c) if c.contains("A comment line")))
+        );
     }
 
     #[test]
@@ -1947,14 +1947,18 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Ghost,,0,0,0,,no styles section\n";
         let s = parse_script(ASS.as_bytes());
         let track = s.to_track();
         // Script Info pairs → metadata with lower_snake keys.
-        assert!(track
-            .metadata
-            .iter()
-            .any(|(k, v)| k == "title" && v == "Demo"));
-        assert!(track
-            .metadata
-            .iter()
-            .any(|(k, v)| k == "playresx" && v == "1280"));
+        assert!(
+            track
+                .metadata
+                .iter()
+                .any(|(k, v)| k == "title" && v == "Demo")
+        );
+        assert!(
+            track
+                .metadata
+                .iter()
+                .any(|(k, v)| k == "playresx" && v == "1280")
+        );
         // Both style rows projected.
         assert_eq!(track.styles.len(), 2);
         let title = track.styles.iter().find(|s| s.name == "Title").unwrap();
@@ -1996,13 +2000,15 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Ghost,,0,0,0,,no styles section\n";
         };
         let tags = ev.override_tags();
         // Spans both override blocks in document order.
-        assert!(tags
-            .iter()
-            .any(|t| matches!(t, AnimatedTag::Pos { x, y } if *x == 100.0 && *y == 200.0)));
+        assert!(
+            tags.iter()
+                .any(|t| matches!(t, AnimatedTag::Pos { x, y } if *x == 100.0 && *y == 200.0))
+        );
         // `&H0000FF&` is `&Hbbggrr&` → rr=FF → rgb (255, 0, 0).
-        assert!(tags
-            .iter()
-            .any(|t| matches!(t, AnimatedTag::Color3((255, 0, 0)))));
+        assert!(
+            tags.iter()
+                .any(|t| matches!(t, AnimatedTag::Color3((255, 0, 0))))
+        );
         assert!(tags.iter().any(|t| matches!(
             t,
             AnimatedTag::Fad {

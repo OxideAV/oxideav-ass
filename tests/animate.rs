@@ -3,7 +3,7 @@
 //! resulting `RenderState`.
 
 use oxideav_ass as ass;
-use oxideav_ass::{extract_cue_animation, AnimatedTag, ClipRect};
+use oxideav_ass::{AnimatedTag, ClipRect, extract_cue_animation};
 
 const HEADER: &str = r"[Script Info]
 ScriptType: v4.00+
@@ -160,14 +160,18 @@ fn round_trip_preserves_animated_tags() {
     // Re-extraction works on the re-parsed text.
     let t2 = ass::parse(out.as_bytes()).unwrap();
     let anim2 = extract_cue_animation(&t2.cues[0]);
-    assert!(anim2
-        .tags
-        .iter()
-        .any(|t| matches!(t, AnimatedTag::Fad { .. })));
-    assert!(anim2
-        .tags
-        .iter()
-        .any(|t| matches!(t, AnimatedTag::Move { .. })));
+    assert!(
+        anim2
+            .tags
+            .iter()
+            .any(|t| matches!(t, AnimatedTag::Fad { .. }))
+    );
+    assert!(
+        anim2
+            .tags
+            .iter()
+            .any(|t| matches!(t, AnimatedTag::Move { .. }))
+    );
     assert!(anim2.tags.iter().any(|t| matches!(t, AnimatedTag::Frz(_))));
     assert!(anim2.tags.iter().any(|t| matches!(t, AnimatedTag::Blur(_))));
 }
@@ -559,14 +563,18 @@ fn frx_fry_round_trip_preserves_raw_block() {
     }
     let t2 = ass::parse(out.as_bytes()).unwrap();
     let anim2 = extract_cue_animation(&t2.cues[0]);
-    assert!(anim2
-        .tags
-        .iter()
-        .any(|t| matches!(t, AnimatedTag::Frx(v) if (*v - 30.0).abs() < 1e-6)));
-    assert!(anim2
-        .tags
-        .iter()
-        .any(|t| matches!(t, AnimatedTag::Fry(v) if (*v - 45.0).abs() < 1e-6)));
+    assert!(
+        anim2
+            .tags
+            .iter()
+            .any(|t| matches!(t, AnimatedTag::Frx(v) if (*v - 30.0).abs() < 1e-6))
+    );
+    assert!(
+        anim2
+            .tags
+            .iter()
+            .any(|t| matches!(t, AnimatedTag::Fry(v) if (*v - 45.0).abs() < 1e-6))
+    );
 }
 
 #[test]
@@ -676,10 +684,12 @@ fn pbo_round_trips_through_writer() {
     // Re-parse should still surface the typed tag.
     let t2 = ass::parse(out.as_bytes()).unwrap();
     let anim2 = extract_cue_animation(&t2.cues[0]);
-    assert!(anim2
-        .tags
-        .iter()
-        .any(|t| matches!(t, AnimatedTag::Pbo(-25))));
+    assert!(
+        anim2
+            .tags
+            .iter()
+            .any(|t| matches!(t, AnimatedTag::Pbo(-25)))
+    );
 }
 
 #[test]

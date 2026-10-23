@@ -1113,16 +1113,16 @@ fn apply_blur_post(buf: &mut [u8], width: u32, height: u32, sigma: f32) {
         height,
     };
     let filter = oxideav_image_filter::Blur::new(radius).with_sigma(sigma);
-    if let Ok(out) = oxideav_image_filter::ImageFilter::apply(&filter, &input, params) {
-        if let Some(plane) = out.planes.first() {
-            // The Blur filter ships a tight-stride output (= width *
-            // bpp), so copy row-by-row only if its stride differs
-            // from our canvas's tight stride. They match for the
-            // RGBA full-resolution single-plane case, so the fast
-            // path here is one straight copy.
-            let want = expected.min(plane.data.len());
-            buf[..want].copy_from_slice(&plane.data[..want]);
-        }
+    if let Ok(out) = oxideav_image_filter::ImageFilter::apply(&filter, &input, params)
+        && let Some(plane) = out.planes.first()
+    {
+        // The Blur filter ships a tight-stride output (= width *
+        // bpp), so copy row-by-row only if its stride differs
+        // from our canvas's tight stride. They match for the
+        // RGBA full-resolution single-plane case, so the fast
+        // path here is one straight copy.
+        let want = expected.min(plane.data.len());
+        buf[..want].copy_from_slice(&plane.data[..want]);
     }
 }
 
@@ -1524,11 +1524,7 @@ fn border_stroke(width: f32, paint: Paint) -> Stroke {
 /// `1.0` so the stroke stays finite.
 fn transform_scale(t: &Transform2D) -> f32 {
     let det = (t.a * t.d - t.b * t.c).abs();
-    if det > f32::EPSILON {
-        det.sqrt()
-    } else {
-        1.0
-    }
+    if det > f32::EPSILON { det.sqrt() } else { 1.0 }
 }
 
 /// Recursively set both `fill` and `stroke` on every `PathNode` in
@@ -2247,7 +2243,7 @@ mod tests {
         // the rounded mean is exactly that value. Confirms the +1
         // bias in `(a+b+c+1)/3` keeps a constant patch invariant.
         let mut buf = vec![0u8; 8 * 6 * 4];
-        for px in buf.chunks_exact_mut(4) {
+        for px in buf.as_chunks_mut::<4>().0 {
             px[0] = 200;
             px[1] = 100;
             px[2] = 50;
@@ -2589,10 +2585,10 @@ mod tests {
             "../../crates/oxideav-ttf/tests/fixtures/DejaVuSans.ttf",
         ];
         for p in candidates {
-            if let Ok(b) = std::fs::read(p) {
-                if let Ok(face) = oxideav_scribe::Face::from_ttf_bytes(b) {
-                    return Some(FaceChain::new(face));
-                }
+            if let Ok(b) = std::fs::read(p)
+                && let Ok(face) = oxideav_scribe::Face::from_ttf_bytes(b)
+            {
+                return Some(FaceChain::new(face));
             }
         }
         None

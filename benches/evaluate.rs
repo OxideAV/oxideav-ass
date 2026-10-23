@@ -25,7 +25,7 @@
 //!   - **collision_resolve_64**: `resolve_layout` over 64 boxes in
 //!     8 overlapping clusters, both policies.
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 fn typical_block() -> &'static str {
     "\\pos(320,240)\\t(0,1000,2,\\frz360\\clip(0,0,100,100))\\fad(200,300)"

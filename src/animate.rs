@@ -1033,11 +1033,7 @@ fn apply_t(
     }
     // Compute the interpolation factor in [0,1].
     let raw = if end <= start {
-        if t_ms >= end {
-            1.0
-        } else {
-            0.0
-        }
+        if t_ms >= end { 1.0 } else { 0.0 }
     } else if t_ms <= start {
         0.0
     } else if t_ms >= end {
@@ -1386,11 +1382,7 @@ fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), k: f32) -> (u8, u8, u8) {
 
 fn lerp_xy(a: (f32, f32), b: (f32, f32), t1: i32, t2: i32, t: i32) -> (f32, f32) {
     let k = if t2 <= t1 {
-        if t >= t2 {
-            1.0
-        } else {
-            0.0
-        }
+        if t >= t2 { 1.0 } else { 0.0 }
     } else if t <= t1 {
         0.0
     } else if t >= t2 {
@@ -3885,10 +3877,11 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\fnArial\\fe128\\b500\\rAlt}
         let st = anim.evaluate_at(500, 1000);
         assert_eq!(st.italic, Some(true));
         // \fad survives in the same block alongside \i.
-        assert!(anim
-            .tags
-            .iter()
-            .any(|t| matches!(t, AnimatedTag::Fad { .. })));
+        assert!(
+            anim.tags
+                .iter()
+                .any(|t| matches!(t, AnimatedTag::Fad { .. }))
+        );
     }
 
     #[test]

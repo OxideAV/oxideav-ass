@@ -40,32 +40,32 @@ pub mod style_transform;
 pub mod transform;
 
 pub use animate::{
-    extract_cue_animation, parse_overrides, AnimatedTag, ClipRect, CueAnimation, KaraokeKind,
-    KaraokeSpan, RenderState,
+    AnimatedTag, ClipRect, CueAnimation, KaraokeKind, KaraokeSpan, RenderState,
+    extract_cue_animation, parse_overrides,
 };
-pub use attachment::{parse_attachments, Attachment, AttachmentKind};
-pub use collision::{resolve_cue_layout, resolve_layout, CanvasGeometry, CollisionBox};
-pub use dialogue_layer::{parse_layer_field, LayerOverride};
-pub use dialogue_margin::{parse_margin_field, MarginOverride};
-pub use dialogue_name::{parse_name_field, NameOverride};
+pub use attachment::{Attachment, AttachmentKind, parse_attachments};
+pub use collision::{CanvasGeometry, CollisionBox, resolve_cue_layout, resolve_layout};
+pub use dialogue_layer::{LayerOverride, parse_layer_field};
+pub use dialogue_margin::{MarginOverride, parse_margin_field};
+pub use dialogue_name::{NameOverride, parse_name_field};
 pub use drawing::parse_drawing;
-pub use event_effect::{parse_effect_field, BannerDirection, EventEffect};
+pub use event_effect::{BannerDirection, EventEffect, parse_effect_field};
 #[cfg(feature = "render")]
-pub use render::{make_animated_decoder, AnimatedRenderedDecoder};
+pub use render::{AnimatedRenderedDecoder, make_animated_decoder};
 pub use script::{
-    parse_script, AssScript, Dialect, Event, EventKind, EventTable, InfoLine, RawSection,
-    ResolvedStyle, ScriptInfo, Section, StyleDef, StyleTable,
+    AssScript, Dialect, Event, EventKind, EventTable, InfoLine, RawSection, ResolvedStyle,
+    ScriptInfo, Section, StyleDef, StyleTable, parse_script,
 };
 pub use script_info::{
-    parse_collisions_field, parse_play_depth_field, parse_play_res_field, parse_timer_field,
-    parse_wrap_style_field, Collisions, WrapStyle,
+    Collisions, WrapStyle, parse_collisions_field, parse_play_depth_field, parse_play_res_field,
+    parse_timer_field, parse_wrap_style_field,
 };
-pub use style_alignment::{parse_alignment_field, AlignH, AlignV, StyleAlignment};
-pub use style_border::{parse_border_style_field, BorderStyle};
-pub use style_encoding::{parse_encoding_field, StyleEncoding};
+pub use style_alignment::{AlignH, AlignV, StyleAlignment, parse_alignment_field};
+pub use style_border::{BorderStyle, parse_border_style_field};
+pub use style_encoding::{StyleEncoding, parse_encoding_field};
 pub use style_transform::{
-    parse_angle_field, parse_scale_field, parse_spacing_field, parse_style_transform,
-    StyleTransform,
+    StyleTransform, parse_angle_field, parse_scale_field, parse_spacing_field,
+    parse_style_transform,
 };
 
 use oxideav_core::ContainerRegistry;
@@ -143,10 +143,10 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
                 extradata.push('\n');
                 if let Some(rest) = strip_prefix_case(trimmed, "Format:") {
                     style_format = rest.split(',').map(|s| s.trim().to_string()).collect();
-                } else if let Some(rest) = strip_prefix_case(trimmed, "Style:") {
-                    if let Some(style) = parse_style_line(rest, &style_format, is_ssa) {
-                        track.styles.push(style);
-                    }
+                } else if let Some(rest) = strip_prefix_case(trimmed, "Style:")
+                    && let Some(style) = parse_style_line(rest, &style_format, is_ssa)
+                {
+                    track.styles.push(style);
                 }
             }
             "events" => {
@@ -404,11 +404,7 @@ pub(crate) fn parse_ass_timestamp(s: &str) -> Option<i64> {
         let cs_str = if frac.len() > 2 { &frac[..2] } else { frac };
         let cs = cs_str.parse::<u32>().ok()?;
         // Pad to 2 digits if only 1 was given.
-        if frac.len() == 1 {
-            cs * 10
-        } else {
-            cs
-        }
+        if frac.len() == 1 { cs * 10 } else { cs }
     };
     // The components parse as full-range u32 (a hostile hour field
     // like `4294967295` is representable), so the microsecond fold
@@ -848,10 +844,10 @@ fn format_ass_color(r: u8, g: u8, b: u8, a: u8) -> String {
 
 fn render_event_text(cue: &SubtitleCue) -> String {
     let mut out = String::new();
-    if let Some(p) = &cue.positioning {
-        if let (Some(x), Some(y)) = (p.x, p.y) {
-            out.push_str(&format!("{{\\pos({},{})}}", x as i32, y as i32));
-        }
+    if let Some(p) = &cue.positioning
+        && let (Some(x), Some(y)) = (p.x, p.y)
+    {
+        out.push_str(&format!("{{\\pos({},{})}}", x as i32, y as i32));
     }
     append_ass_segments(&cue.segments, &mut out);
     out

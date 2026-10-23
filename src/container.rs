@@ -29,11 +29,7 @@ pub fn register(reg: &mut ContainerRegistry) {
 }
 
 fn probe_ass(p: &ProbeData) -> u8 {
-    if super::looks_like_ass(p.buf) {
-        100
-    } else {
-        0
-    }
+    if super::looks_like_ass(p.buf) { 100 } else { 0 }
 }
 
 fn read_all(mut input: Box<dyn ReadSeek>) -> Result<Vec<u8>> {
@@ -187,11 +183,11 @@ fn rebuild_track(extradata: &[u8], packets: &[Packet]) -> Result<SubtitleTrack> 
     // re-emit them. We do this by parsing the extradata as a truncated
     // file of this format — works because extradata carries the exact
     // header the demuxer saw.
-    if !extradata.is_empty() {
-        if let Ok(p) = super::parse(extradata) {
-            track.styles = p.styles;
-            track.metadata = p.metadata;
-        }
+    if !extradata.is_empty()
+        && let Ok(p) = super::parse(extradata)
+    {
+        track.styles = p.styles;
+        track.metadata = p.metadata;
     }
     for pkt in packets {
         let cue = super::bytes_to_cue(&pkt.data)?;

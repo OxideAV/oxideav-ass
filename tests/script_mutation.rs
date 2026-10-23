@@ -62,10 +62,10 @@ fn mutate_then_restore_is_byte_identical() {
         match sec {
             ass::Section::ScriptInfo(info) => {
                 for line in info.lines.iter_mut() {
-                    if let ass::InfoLine::Pair { key, value } = line {
-                        if key == "Title" {
-                            old_info = Some(std::mem::replace(value, "Changed".into()));
-                        }
+                    if let ass::InfoLine::Pair { key, value } = line
+                        && key == "Title"
+                    {
+                        old_info = Some(std::mem::replace(value, "Changed".into()));
                     }
                 }
             }
@@ -93,10 +93,10 @@ fn mutate_then_restore_is_byte_identical() {
         match sec {
             ass::Section::ScriptInfo(info) => {
                 for line in info.lines.iter_mut() {
-                    if let ass::InfoLine::Pair { key, value } = line {
-                        if key == "Title" {
-                            *value = old_info.clone().unwrap();
-                        }
+                    if let ass::InfoLine::Pair { key, value } = line
+                        && key == "Title"
+                    {
+                        *value = old_info.clone().unwrap();
                     }
                 }
             }

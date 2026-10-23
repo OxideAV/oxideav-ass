@@ -123,12 +123,14 @@ fn structured_typed_accessors() {
 
     // Override-tag stream on the sign event.
     let tags = events[2].override_tags();
-    assert!(tags
-        .iter()
-        .any(|t| matches!(t, ass::AnimatedTag::Pos { .. })));
-    assert!(tags
-        .iter()
-        .any(|t| matches!(t, ass::AnimatedTag::Fad { .. })));
+    assert!(
+        tags.iter()
+            .any(|t| matches!(t, ass::AnimatedTag::Pos { .. }))
+    );
+    assert!(
+        tags.iter()
+            .any(|t| matches!(t, ass::AnimatedTag::Fad { .. }))
+    );
 
     // Style typed columns: the Sign is an opaque box with a non-ANSI
     // encoding slot.

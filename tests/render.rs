@@ -68,7 +68,13 @@ fn alpha_mass(frame: &Frame) -> u64 {
         Some(p) => p,
         None => return 0,
     };
-    plane.data.chunks_exact(4).map(|p| p[3] as u64).sum()
+    plane
+        .data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| p[3] as u64)
+        .sum()
 }
 
 /// Bounding box of the pixels with alpha > 0. Returns
@@ -84,7 +90,7 @@ fn alpha_bbox(frame: &Frame, width: u32) -> Option<(u32, u32, u32, u32)> {
     let mut max_x = 0;
     let mut max_y = 0;
     let mut any = false;
-    for (i, px) in plane.data.chunks_exact(4).enumerate() {
+    for (i, px) in plane.data.as_chunks::<4>().0.iter().enumerate() {
         if px[3] == 0 {
             continue;
         }
@@ -214,7 +220,7 @@ fn clip_drawing_masks_rasterised_glyphs() {
     };
     let plane = &vf.planes[0];
     let mut outside_lit = 0;
-    for (i, px) in plane.data.chunks_exact(4).enumerate() {
+    for (i, px) in plane.data.as_chunks::<4>().0.iter().enumerate() {
         if px[3] == 0 {
             continue;
         }
@@ -1391,7 +1397,9 @@ fn red_dominant_pixels(frame: &Frame) -> u64 {
     };
     plane
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[3] > 0 && px[0] > 150 && px[1] < 80 && px[2] < 80)
         .count() as u64
 }
@@ -1505,7 +1513,9 @@ fn white_pixels(frame: &Frame) -> u64 {
     };
     plane
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[3] > 200 && px[0] > 200 && px[1] > 200 && px[2] > 200)
         .count() as u64
 }
@@ -1534,7 +1544,9 @@ fn bord_default_border_color_is_black() {
         };
         plane
             .data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|px| px[3] > 200 && px[0] < 60 && px[1] < 60 && px[2] < 60)
             .count() as u64
     };

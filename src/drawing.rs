@@ -280,10 +280,11 @@ pub fn split_clip_arg(arg: &str) -> (u32, &str) {
     // The leading scale is a single integer followed by a comma.
     if let Some(comma) = trimmed.find(',') {
         let head = trimmed[..comma].trim();
-        if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) {
-            if let Ok(n) = head.parse::<u32>() {
-                return (n.max(1), trimmed[comma + 1..].trim_start());
-            }
+        if !head.is_empty()
+            && head.chars().all(|c| c.is_ascii_digit())
+            && let Ok(n) = head.parse::<u32>()
+        {
+            return (n.max(1), trimmed[comma + 1..].trim_start());
         }
     }
     (1, trimmed)
@@ -448,10 +449,11 @@ mod tests {
         // `s` with only one point pair → control polygon of 2 (incl.
         // cursor) → no segment.
         let p = parse_drawing("m 0 0 s 10 10", 1);
-        assert!(!p
-            .commands
-            .iter()
-            .any(|c| matches!(c, PathCommand::CubicCurveTo { .. })));
+        assert!(
+            !p.commands
+                .iter()
+                .any(|c| matches!(c, PathCommand::CubicCurveTo { .. }))
+        );
     }
 
     #[test]
@@ -472,14 +474,16 @@ mod tests {
     fn unknown_command_skipped() {
         // `q` isn't a recognised drawing command.
         let p = parse_drawing("m 0 0 q 50 50 l 100 100", 1);
-        assert!(p
-            .commands
-            .iter()
-            .any(|c| matches!(c, PathCommand::MoveTo(_))));
-        assert!(p
-            .commands
-            .iter()
-            .any(|c| matches!(c, PathCommand::LineTo(_))));
+        assert!(
+            p.commands
+                .iter()
+                .any(|c| matches!(c, PathCommand::MoveTo(_)))
+        );
+        assert!(
+            p.commands
+                .iter()
+                .any(|c| matches!(c, PathCommand::LineTo(_)))
+        );
     }
 
     #[test]
