@@ -92,7 +92,7 @@ fn bench_all(c: &mut Criterion) {
     {
         let mut tags = Vec::new();
         oxideav_ass::parse_overrides("\\an8\\fs32\\1c&H0000FF&\\bord2\\shad1\\blur1.5", &mut tags);
-        let anim = oxideav_ass::CueAnimation { tags };
+        let anim = oxideav_ass::CueAnimation::default().with_tags(tags);
         c.bench_function("evaluate_at_static", |b| {
             b.iter(|| std::hint::black_box(&anim).evaluate_at(std::hint::black_box(2500), 5000))
         });
@@ -103,7 +103,7 @@ fn bench_all(c: &mut Criterion) {
             "\\move(0,0,640,480,0,5000)\\t(0,5000,2,\\frz360\\fscx200\\1c&H00FF00&\\clip(0,0,320,240))\\fad(300,300)",
             &mut tags,
         );
-        let anim = oxideav_ass::CueAnimation { tags };
+        let anim = oxideav_ass::CueAnimation::default().with_tags(tags);
         c.bench_function("evaluate_at_animated", |b| {
             b.iter(|| std::hint::black_box(&anim).evaluate_at(std::hint::black_box(2500), 5000))
         });
@@ -113,7 +113,7 @@ fn bench_all(c: &mut Criterion) {
     {
         let mut tags = Vec::new();
         oxideav_ass::parse_overrides(&karaoke_block(), &mut tags);
-        let anim = oxideav_ass::CueAnimation { tags };
+        let anim = oxideav_ass::CueAnimation::default().with_tags(tags);
         c.bench_function("karaoke_spans", |b| {
             b.iter(|| std::hint::black_box(&anim).karaoke_spans())
         });
@@ -141,11 +141,7 @@ fn bench_all(c: &mut Criterion) {
                 )
             })
             .collect();
-        let geo = oxideav_ass::CanvasGeometry {
-            height_px: 480,
-            bottom_margin_px: 20,
-            top_margin_px: 0,
-        };
+        let geo = oxideav_ass::CanvasGeometry::new(480, 20, 0);
         c.bench_function("collision_resolve_64_normal", |b| {
             b.iter(|| {
                 oxideav_ass::resolve_layout(

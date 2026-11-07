@@ -144,7 +144,7 @@ fn main() {
             let r = panic::catch_unwind(move || {
                 let mut tags = Vec::new();
                 oxideav_ass::parse_overrides(&t2, &mut tags);
-                let anim = oxideav_ass::CueAnimation { tags };
+                let anim = oxideav_ass::CueAnimation::default().with_tags(tags);
                 let st = anim.evaluate_at(500, 1000);
                 let _ = st;
             });

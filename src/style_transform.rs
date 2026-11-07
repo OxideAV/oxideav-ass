@@ -53,6 +53,7 @@
 /// resolved value when every column is absent, and it leaves a glyph
 /// rendered exactly as its font + size dictate.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct StyleTransform {
     /// Horizontal font scale as a percentage (`100.0` = unscaled).
     /// From the `ScaleX` column; the spec describes it as *"modifies
@@ -74,6 +75,36 @@ pub struct StyleTransform {
     /// number"*. The per-segment `\frz` override takes precedence when
     /// present.
     pub angle: f64,
+}
+
+impl StyleTransform {
+    /// Builder: set [`scale_x`](Self::scale_x).
+    #[must_use]
+    pub fn with_scale_x(mut self, v: f64) -> Self {
+        self.scale_x = v;
+        self
+    }
+
+    /// Builder: set [`scale_y`](Self::scale_y).
+    #[must_use]
+    pub fn with_scale_y(mut self, v: f64) -> Self {
+        self.scale_y = v;
+        self
+    }
+
+    /// Builder: set [`spacing`](Self::spacing).
+    #[must_use]
+    pub fn with_spacing(mut self, v: f64) -> Self {
+        self.spacing = v;
+        self
+    }
+
+    /// Builder: set [`angle`](Self::angle).
+    #[must_use]
+    pub fn with_angle(mut self, v: f64) -> Self {
+        self.angle = v;
+        self
+    }
 }
 
 impl Default for StyleTransform {

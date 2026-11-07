@@ -39,6 +39,7 @@ use oxideav_core::{Error, Result};
 /// the consumer is expected to do with the bytes (install as a font
 /// vs. show as a picture).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AttachmentKind {
     /// `[Fonts]` — the bytes are a font file the script wants to use.
     Font,
@@ -49,6 +50,7 @@ pub enum AttachmentKind {
 
 /// One decoded `[Fonts]` / `[Graphics]` attachment.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Attachment {
     /// `Font` for `fontname:`, `Graphics` for `filename:`.
     pub kind: AttachmentKind,
@@ -59,6 +61,13 @@ pub struct Attachment {
     /// the SSA Appendix-B scheme, would produce the printable body
     /// the parser consumed.
     pub data: Vec<u8>,
+}
+
+impl Attachment {
+    /// Build a [`Attachment`] from every field.
+    pub fn new(kind: AttachmentKind, name: String, data: Vec<u8>) -> Self {
+        Self { kind, name, data }
+    }
 }
 
 /// Walk the header sections of an SSA / ASS script and collect every

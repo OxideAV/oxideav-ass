@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `KaraokeSpan::new`, `Attachment::new`, `CanvasGeometry::new`,
+  `ResolvedStyle::new`, and `with_*` setters on `CueAnimation`,
+  `ScriptInfo`, `StyleTable`, `StyleDef`, `EventTable`, `Event`,
+  `RawSection`, `AssScript` and `StyleTransform`.
+
 ### Changed
 
+- API hygiene: the enums `KaraokeKind`, `AnimatedTag`, `AttachmentKind`,
+  `EventEffect`, `Section`, `InfoLine`, `EventKind`, `Dialect` and the
+  records `KaraokeSpan`, `CueAnimation`, `RenderState`, `Attachment`,
+  `CanvasGeometry`, `ScriptInfo`, `StyleTable`, `StyleDef`,
+  `EventTable`, `Event`, `RawSection`, `AssScript`, `ResolvedStyle`,
+  `StyleTransform` are now `#[non_exhaustive]`; match with a `_` arm and
+  build records via `Default` / `new(..)` + `with_*`. Spec-fixed enums
+  (`LayerOverride`, `MarginOverride`, `NameOverride`, `BannerDirection`,
+  `WrapStyle`, `Collisions`, `AlignH`, `AlignV`, `BorderStyle`) and the
+  value types `ClipRect` / `StyleAlignment` / `StyleEncoding` stay as
+  they were.
 - edition 2024, MSRV 1.95.
 
 ## [0.0.11](https://github.com/OxideAV/oxideav-ass/compare/v0.0.10...v0.0.11) - 2026-10-06

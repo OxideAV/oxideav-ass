@@ -55,6 +55,7 @@ use crate::style_encoding::{StyleEncoding, parse_encoding_field};
 /// not enough on its own (editor-private blocks like `[Aegisub Project
 /// Garbage]`, the UU-encoded `[Fonts]` / `[Graphics]` bodies).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Section {
     /// `[Script Info]` — ordered key/value (and comment) header lines.
     ScriptInfo(ScriptInfo),
@@ -71,14 +72,25 @@ pub enum Section {
 
 /// `[Script Info]` header lines, kept in source order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ScriptInfo {
     /// Ordered header lines. Each entry is either a `Key: Value` pair
     /// or a verbatim comment / blank line (see [`InfoLine`]).
     pub lines: Vec<InfoLine>,
 }
 
+impl ScriptInfo {
+    /// Builder: set [`lines`](Self::lines).
+    #[must_use]
+    pub fn with_lines(mut self, v: Vec<InfoLine>) -> Self {
+        self.lines = v;
+        self
+    }
+}
+
 /// A single line inside the `[Script Info]` section.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InfoLine {
     /// A `Key: Value` header entry. `key` keeps its original casing /
     /// spelling so a round-trip emits it unchanged.
@@ -152,6 +164,7 @@ impl ScriptInfo {
 
 /// A style table: the `Format:` field order plus the decoded rows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct StyleTable {
     /// `true` for an ASS `[V4+ Styles]` section, `false` for a legacy
     /// SSA `[V4 Styles]` section. The two dialects carry slightly
@@ -165,6 +178,29 @@ pub struct StyleTable {
     pub styles: Vec<StyleDef>,
 }
 
+impl StyleTable {
+    /// Builder: set [`ass`](Self::ass).
+    #[must_use]
+    pub fn with_ass(mut self, v: bool) -> Self {
+        self.ass = v;
+        self
+    }
+
+    /// Builder: set [`format`](Self::format).
+    #[must_use]
+    pub fn with_format(mut self, v: Vec<String>) -> Self {
+        self.format = v;
+        self
+    }
+
+    /// Builder: set [`styles`](Self::styles).
+    #[must_use]
+    pub fn with_styles(mut self, v: Vec<StyleDef>) -> Self {
+        self.styles = v;
+        self
+    }
+}
+
 /// A fully-typed `Style:` row.
 ///
 /// Every column the SSA v4.x / ASS spec defines is captured. Columns
@@ -173,6 +209,7 @@ pub struct StyleTable {
 /// re-emits the author's exact spelling (including leading-zero / case
 /// variations) rather than a canonicalised form.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct StyleDef {
     pub name: String,
     pub fontname: String,
@@ -206,6 +243,176 @@ pub struct StyleDef {
     /// SSA-only `AlphaLevel` column (transparency), raw token.
     pub alpha_level: String,
     pub encoding: String,
+}
+
+impl StyleDef {
+    /// Builder: set [`name`](Self::name).
+    #[must_use]
+    pub fn with_name(mut self, v: String) -> Self {
+        self.name = v;
+        self
+    }
+
+    /// Builder: set [`fontname`](Self::fontname).
+    #[must_use]
+    pub fn with_fontname(mut self, v: String) -> Self {
+        self.fontname = v;
+        self
+    }
+
+    /// Builder: set [`fontsize`](Self::fontsize).
+    #[must_use]
+    pub fn with_fontsize(mut self, v: String) -> Self {
+        self.fontsize = v;
+        self
+    }
+
+    /// Builder: set [`primary_colour`](Self::primary_colour).
+    #[must_use]
+    pub fn with_primary_colour(mut self, v: String) -> Self {
+        self.primary_colour = v;
+        self
+    }
+
+    /// Builder: set [`secondary_colour`](Self::secondary_colour).
+    #[must_use]
+    pub fn with_secondary_colour(mut self, v: String) -> Self {
+        self.secondary_colour = v;
+        self
+    }
+
+    /// Builder: set [`outline_colour`](Self::outline_colour).
+    #[must_use]
+    pub fn with_outline_colour(mut self, v: String) -> Self {
+        self.outline_colour = v;
+        self
+    }
+
+    /// Builder: set [`back_colour`](Self::back_colour).
+    #[must_use]
+    pub fn with_back_colour(mut self, v: String) -> Self {
+        self.back_colour = v;
+        self
+    }
+
+    /// Builder: set [`bold`](Self::bold).
+    #[must_use]
+    pub fn with_bold(mut self, v: String) -> Self {
+        self.bold = v;
+        self
+    }
+
+    /// Builder: set [`italic`](Self::italic).
+    #[must_use]
+    pub fn with_italic(mut self, v: String) -> Self {
+        self.italic = v;
+        self
+    }
+
+    /// Builder: set [`underline`](Self::underline).
+    #[must_use]
+    pub fn with_underline(mut self, v: String) -> Self {
+        self.underline = v;
+        self
+    }
+
+    /// Builder: set [`strikeout`](Self::strikeout).
+    #[must_use]
+    pub fn with_strikeout(mut self, v: String) -> Self {
+        self.strikeout = v;
+        self
+    }
+
+    /// Builder: set [`scale_x`](Self::scale_x).
+    #[must_use]
+    pub fn with_scale_x(mut self, v: String) -> Self {
+        self.scale_x = v;
+        self
+    }
+
+    /// Builder: set [`scale_y`](Self::scale_y).
+    #[must_use]
+    pub fn with_scale_y(mut self, v: String) -> Self {
+        self.scale_y = v;
+        self
+    }
+
+    /// Builder: set [`spacing`](Self::spacing).
+    #[must_use]
+    pub fn with_spacing(mut self, v: String) -> Self {
+        self.spacing = v;
+        self
+    }
+
+    /// Builder: set [`angle`](Self::angle).
+    #[must_use]
+    pub fn with_angle(mut self, v: String) -> Self {
+        self.angle = v;
+        self
+    }
+
+    /// Builder: set [`border_style`](Self::border_style).
+    #[must_use]
+    pub fn with_border_style(mut self, v: String) -> Self {
+        self.border_style = v;
+        self
+    }
+
+    /// Builder: set [`outline`](Self::outline).
+    #[must_use]
+    pub fn with_outline(mut self, v: String) -> Self {
+        self.outline = v;
+        self
+    }
+
+    /// Builder: set [`shadow`](Self::shadow).
+    #[must_use]
+    pub fn with_shadow(mut self, v: String) -> Self {
+        self.shadow = v;
+        self
+    }
+
+    /// Builder: set [`alignment`](Self::alignment).
+    #[must_use]
+    pub fn with_alignment(mut self, v: String) -> Self {
+        self.alignment = v;
+        self
+    }
+
+    /// Builder: set [`margin_l`](Self::margin_l).
+    #[must_use]
+    pub fn with_margin_l(mut self, v: String) -> Self {
+        self.margin_l = v;
+        self
+    }
+
+    /// Builder: set [`margin_r`](Self::margin_r).
+    #[must_use]
+    pub fn with_margin_r(mut self, v: String) -> Self {
+        self.margin_r = v;
+        self
+    }
+
+    /// Builder: set [`margin_v`](Self::margin_v).
+    #[must_use]
+    pub fn with_margin_v(mut self, v: String) -> Self {
+        self.margin_v = v;
+        self
+    }
+
+    /// Builder: set [`alpha_level`](Self::alpha_level).
+    #[must_use]
+    pub fn with_alpha_level(mut self, v: String) -> Self {
+        self.alpha_level = v;
+        self
+    }
+
+    /// Builder: set [`encoding`](Self::encoding).
+    #[must_use]
+    pub fn with_encoding(mut self, v: String) -> Self {
+        self.encoding = v;
+        self
+    }
 }
 
 impl StyleDef {
@@ -336,11 +543,28 @@ impl StyleDef {
 
 /// An event table: the `Format:` field order plus the decoded rows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EventTable {
     /// The `Format:` row, field names in order.
     pub format: Vec<String>,
     /// Decoded event rows in source order (Dialogue, Comment, …).
     pub events: Vec<Event>,
+}
+
+impl EventTable {
+    /// Builder: set [`format`](Self::format).
+    #[must_use]
+    pub fn with_format(mut self, v: Vec<String>) -> Self {
+        self.format = v;
+        self
+    }
+
+    /// Builder: set [`events`](Self::events).
+    #[must_use]
+    pub fn with_events(mut self, v: Vec<Event>) -> Self {
+        self.events = v;
+        self
+    }
 }
 
 /// The line descriptor of an `[Events]` row.
@@ -349,6 +573,7 @@ pub struct EventTable {
 /// same field layout; only the descriptor and the rendering semantics
 /// differ.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EventKind {
     /// `Dialogue:` — subtitle text.
     #[default]
@@ -401,6 +626,7 @@ impl EventKind {
 /// demand. The `text` column keeps the entire post-9th-comma remainder
 /// verbatim (override blocks intact).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Event {
     pub kind: EventKind,
     /// `Layer` (ASS) or `Marked` (SSA) — raw token.
@@ -414,6 +640,85 @@ pub struct Event {
     pub margin_v: String,
     pub effect: String,
     pub text: String,
+}
+
+impl Event {
+    /// Builder: set [`kind`](Self::kind).
+    #[must_use]
+    pub fn with_kind(mut self, v: EventKind) -> Self {
+        self.kind = v;
+        self
+    }
+
+    /// Builder: set [`layer`](Self::layer).
+    #[must_use]
+    pub fn with_layer(mut self, v: String) -> Self {
+        self.layer = v;
+        self
+    }
+
+    /// Builder: set [`start`](Self::start).
+    #[must_use]
+    pub fn with_start(mut self, v: String) -> Self {
+        self.start = v;
+        self
+    }
+
+    /// Builder: set [`end`](Self::end).
+    #[must_use]
+    pub fn with_end(mut self, v: String) -> Self {
+        self.end = v;
+        self
+    }
+
+    /// Builder: set [`style`](Self::style).
+    #[must_use]
+    pub fn with_style(mut self, v: String) -> Self {
+        self.style = v;
+        self
+    }
+
+    /// Builder: set [`name`](Self::name).
+    #[must_use]
+    pub fn with_name(mut self, v: String) -> Self {
+        self.name = v;
+        self
+    }
+
+    /// Builder: set [`margin_l`](Self::margin_l).
+    #[must_use]
+    pub fn with_margin_l(mut self, v: String) -> Self {
+        self.margin_l = v;
+        self
+    }
+
+    /// Builder: set [`margin_r`](Self::margin_r).
+    #[must_use]
+    pub fn with_margin_r(mut self, v: String) -> Self {
+        self.margin_r = v;
+        self
+    }
+
+    /// Builder: set [`margin_v`](Self::margin_v).
+    #[must_use]
+    pub fn with_margin_v(mut self, v: String) -> Self {
+        self.margin_v = v;
+        self
+    }
+
+    /// Builder: set [`effect`](Self::effect).
+    #[must_use]
+    pub fn with_effect(mut self, v: String) -> Self {
+        self.effect = v;
+        self
+    }
+
+    /// Builder: set [`text`](Self::text).
+    #[must_use]
+    pub fn with_text(mut self, v: String) -> Self {
+        self.text = v;
+        self
+    }
 }
 
 impl Event {
@@ -477,6 +782,7 @@ impl Event {
 
 /// A verbatim section: header name + raw body lines.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RawSection {
     /// The section name without brackets (e.g. `Fonts`, `Aegisub
     /// Project Garbage`), original casing preserved.
@@ -485,14 +791,40 @@ pub struct RawSection {
     pub body: Vec<String>,
 }
 
+impl RawSection {
+    /// Builder: set [`name`](Self::name).
+    #[must_use]
+    pub fn with_name(mut self, v: String) -> Self {
+        self.name = v;
+        self
+    }
+
+    /// Builder: set [`body`](Self::body).
+    #[must_use]
+    pub fn with_body(mut self, v: Vec<String>) -> Self {
+        self.body = v;
+        self
+    }
+}
+
 /// A complete parsed ASS/SSA script.
 ///
 /// Sections are kept in source order; convenience accessors pull the
 /// modelled sections out without the caller having to walk the list.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AssScript {
     /// All sections in source order.
     pub sections: Vec<Section>,
+}
+
+impl AssScript {
+    /// Builder: set [`sections`](Self::sections).
+    #[must_use]
+    pub fn with_sections(mut self, v: Vec<Section>) -> Self {
+        self.sections = v;
+        self
+    }
 }
 
 impl AssScript {
@@ -618,6 +950,7 @@ static DEFAULT_STYLE: std::sync::LazyLock<StyleDef> = std::sync::LazyLock::new(|
 /// `margin_*` fields are concrete pixel values with the spec's all-zeroes
 /// fallback already applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ResolvedStyle<'a> {
     /// The chosen base style row.
     pub base: &'a StyleDef,
@@ -627,6 +960,18 @@ pub struct ResolvedStyle<'a> {
     pub margin_r: u32,
     /// Effective bottom (vertical) margin in pixels.
     pub margin_v: u32,
+}
+
+impl<'a> ResolvedStyle<'a> {
+    /// Build a [`ResolvedStyle`] from every field.
+    pub fn new(base: &'a StyleDef, margin_l: u32, margin_r: u32, margin_v: u32) -> Self {
+        Self {
+            base,
+            margin_l,
+            margin_r,
+            margin_v,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -861,6 +1206,7 @@ impl AssScript {
 /// numbering scheme, and event leading column. See
 /// [`AssScript::to_dialect`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Dialect {
     /// ASS `[V4+ Styles]` — numpad alignment, `Layer` event column,
     /// `ScriptType: v4.00+`.

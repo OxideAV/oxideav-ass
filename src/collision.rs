@@ -176,6 +176,7 @@ pub fn resolve_cue_layout(
 /// clamped (the spec notes `Reverse` "can use a lot of screen area", but
 /// a renderer cannot draw off-canvas).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct CanvasGeometry {
     /// Canvas height in pixels.
     pub height_px: u32,
@@ -183,6 +184,17 @@ pub struct CanvasGeometry {
     pub bottom_margin_px: u32,
     /// Top margin in pixels (the clamp ceiling).
     pub top_margin_px: u32,
+}
+
+impl CanvasGeometry {
+    /// Build a [`CanvasGeometry`] from every field.
+    pub fn new(height_px: u32, bottom_margin_px: u32, top_margin_px: u32) -> Self {
+        Self {
+            height_px,
+            bottom_margin_px,
+            top_margin_px,
+        }
+    }
 }
 
 /// Resolve the vertical layout of `boxes` under `policy`.

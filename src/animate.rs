@@ -169,6 +169,7 @@ use oxideav_core::{Segment, SubtitleCue, Transform2D};
 /// markers recovered from already-parsed `Segment::Karaoke` segments
 /// therefore report [`KaraokeKind::Fill`] as the conservative default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KaraokeKind {
     /// `\k` — instant fill switch at the syllable boundary.
     Fill,
@@ -187,6 +188,7 @@ pub enum KaraokeKind {
 /// durations are cumulative per the Aegisub spec, which gives each
 /// syllable's duration in centiseconds).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct KaraokeSpan {
     /// Which `\k` member produced this syllable.
     pub kind: KaraokeKind,
@@ -195,6 +197,17 @@ pub struct KaraokeSpan {
     /// End of the syllable (= start of the next syllable), ms from cue
     /// start.
     pub end_ms: u32,
+}
+
+impl KaraokeSpan {
+    /// Build a [`KaraokeSpan`] from every field.
+    pub fn new(kind: KaraokeKind, start_ms: u32, end_ms: u32) -> Self {
+        Self {
+            kind,
+            start_ms,
+            end_ms,
+        }
+    }
 }
 
 impl KaraokeSpan {
@@ -220,6 +233,7 @@ impl KaraokeSpan {
 
 /// One typed animated-tag occurrence found in a cue.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum AnimatedTag {
     /// `\fad(t1, t2)` — alpha 0 → 255 over `t1` ms then 255 → 0 over
     /// `t2` ms (ASS alpha; converted to a `0.0..=1.0` multiplier in
@@ -469,8 +483,18 @@ pub enum AnimatedTag {
 
 /// All animated tags found in a single cue, in the order parsed.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct CueAnimation {
     pub tags: Vec<AnimatedTag>,
+}
+
+impl CueAnimation {
+    /// Builder: set [`tags`](Self::tags).
+    #[must_use]
+    pub fn with_tags(mut self, v: Vec<AnimatedTag>) -> Self {
+        self.tags = v;
+        self
+    }
 }
 
 impl CueAnimation {
@@ -513,6 +537,7 @@ impl CueAnimation {
 /// `move` ∘ `scale` ∘ `rotate` so the rotation pivot is the
 /// translation point.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct RenderState {
     /// `1.0` = fully opaque, `0.0` = fully transparent.
     pub alpha_mul: f32,

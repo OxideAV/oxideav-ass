@@ -86,6 +86,7 @@ pub enum BannerDirection {
 /// consumer that wants to re-emit them can do so without losing
 /// information.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum EventEffect {
     /// Column was empty or whitespace-only — by far the dominant case
     /// in real scripts.

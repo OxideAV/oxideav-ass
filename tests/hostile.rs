@@ -130,7 +130,7 @@ fn hostile_override_and_drawing_fragments_are_total() {
     for c in cases {
         let mut tags = Vec::new();
         oxideav_ass::parse_overrides(c, &mut tags);
-        let anim = oxideav_ass::CueAnimation { tags };
+        let anim = oxideav_ass::CueAnimation::default().with_tags(tags);
         let st = anim.evaluate_at(500, 1000);
         assert!(st.alpha_mul.is_finite(), "non-finite alpha for {c:?}");
         assert!(
@@ -271,7 +271,9 @@ fn mutation_sweep_parsers_total_and_serialise_fixpoint() {
         let txt = String::from_utf8_lossy(&input);
         let mut tags = Vec::new();
         oxideav_ass::parse_overrides(&txt, &mut tags);
-        let st = oxideav_ass::CueAnimation { tags }.evaluate_at(500, 1000);
+        let st = oxideav_ass::CueAnimation::default()
+            .with_tags(tags)
+            .evaluate_at(500, 1000);
         assert!(st.alpha_mul.is_finite() && st.scale.0.is_finite());
         let _ = oxideav_ass::parse_drawing(&txt, 1);
     }
